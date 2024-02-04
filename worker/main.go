@@ -15,6 +15,8 @@ var (
 )
 
 func removeNewLine(source []byte) []byte {
+	source = bytes.Replace(source, []byte("  "), []byte(""), -1)
+	source = bytes.Replace(source, []byte("\t"), []byte(""), -1)
 	source = bytes.Replace(source, []byte{'\n'}, []byte{}, -1)
 	source = bytes.Replace(source, []byte{'\r'}, []byte{}, -1)
 	source = bytes.Replace(source, []byte("\r\n"), []byte{}, -1)
@@ -22,7 +24,7 @@ func removeNewLine(source []byte) []byte {
 }
 
 func main() {
-	file, err := os.Open("_text.html")
+	file, err := os.Open("_text1.html")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -48,14 +50,17 @@ func MyTokenizer(file io.Reader) {
 
 		switch t := token.(type) {
 		case *OpenTag:
-			log.Println("Open tag", t.Name)
+			// log.Println("Open tag", t.Name)
 
 		case *CloseTag:
-			log.Println("Close tag", t.Name)
+			// log.Println("Close tag", t.Name)
 
 		case *Text:
-			log.Println("Text", string(t.Data))
+			// _ = t
+			// log.Println("Text", string(removeNewLine(t.Data)))
 
+		case *Comment:
+			log.Println("Comment", string(removeNewLine(t.Data)))
 		}
 	}
 }
@@ -313,6 +318,10 @@ type Text struct {
 	Data []byte
 }
 
+type Comment struct {
+	Data []byte
+}
+
 func (tok *Tokenizer) GetBuffer() ([]byte, int) {
 	capacity := cap(tok.buf)
 	numElems := tok.reader.end - tok.reader.start
@@ -380,6 +389,23 @@ loop:
 	}
 }
 
+func (tok *Tokenizer) readUntilCloseBracket() {
+	tok.data.start = tok.reader.end
+	var symbol TerminalSymbol
+	for {
+		symbol = tok.readByte()
+		if tok.Err != nil {
+			tok.data.end = tok.reader.end
+			return
+		}
+
+		if symbol == R_BRACKET {
+			tok.data.end = tok.reader.end
+			return
+		}
+	}
+}
+
 func (tok *Tokenizer) Next() any {
 	tok.reader.start = tok.reader.end
 	tok.data.start = tok.reader.end
@@ -415,22 +441,25 @@ func (tok *Tokenizer) Next() any {
 			tokenType = CLOSE_TAG_TOKEN
 		case symbol == '!' || symbol == '?':
 			tokenType = COMMENT_TOKEN
+			tok.reader.end = tok.reader.end - 2
 		default:
 			tok.reader.end--
 			continue
 		}
 
-		if x := tok.reader.end - 2; tok.reader.start < x {
+		if x := tok.reader.end - 2; tok.reader.start < x && tokenType != COMMENT_TOKEN {
 			tok.reader.end = x
 			tok.data.end = x
 
-			text := &Text{Data: tok.buf[tok.data.start:tok.data.end]}
-
 			tok.tt = TEXT_TOKEN
-			return text
+			return &Text{Data: tok.buf[tok.data.start:tok.data.end]}
 		}
 
 		switch tokenType {
+		case COMMENT_TOKEN:
+			tok.readUntilCloseBracket()
+			return &Comment{Data: tok.buf[tok.data.start:tok.data.end]}
+
 		case OPEN_TAG_TOKEN:
 
 			if tok.state != NORMAL {
@@ -461,8 +490,7 @@ func (tok *Tokenizer) Next() any {
 			bytes := tok.buf[tok.data.start:tok.data.end]
 
 			tag := &CloseTag{}
-			err := tag.Unmarshal(bytes)
-			log.Println("Close tag err", err)
+			_ = tag.Unmarshal(bytes)
 
 			tok.state = NORMAL
 			tok.tt = CLOSE_TAG_TOKEN
@@ -474,18 +502,6 @@ func (tok *Tokenizer) Next() any {
 
 	tok.tt = ERROR_TOKEN
 	return tok.tt
-}
-
-func (tok *Tokenizer) Text() []byte {
-	switch tok.tt {
-	case TEXT_TOKEN:
-		b := tok.buf[tok.data.start:tok.data.end]
-		tok.data.start = tok.reader.end
-		tok.data.end = tok.reader.end
-		b = removeNewLine(b)
-		return b
-	}
-	return nil
 }
 
 func NewTokenizer(reader io.Reader) *Tokenizer {
