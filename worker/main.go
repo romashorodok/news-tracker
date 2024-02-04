@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log"
 	"os"
+)
+
+var (
+	ErrMssingLeftBracket = errors.New("missing left bracket")
+	ErrMssingSlash       = errors.New("missing slash")
+	ErrCursorEnd         = errors.New("end of cursor")
 )
 
 func removeNewLine(source []byte) []byte {
@@ -15,7 +22,7 @@ func removeNewLine(source []byte) []byte {
 }
 
 func main() {
-	file, err := os.Open("text.html")
+	file, err := os.Open("_text.html")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -33,33 +40,22 @@ func MyTokenizer(file io.Reader) {
 	tok := NewTokenizer(file)
 
 	for {
-		tok.Next()
-		// log.Println(tok.tt)
+		token := tok.Next()
 
 		if tok.Err != nil {
 			return
 		}
 
-		tagName := tok.TagName()
-		if string(tagName) == " " || string(tagName) == "\n" {
-			continue
-		}
+		switch t := token.(type) {
+		case *OpenTag:
+			log.Println("Open tag", t.Name)
 
-		if tok.tt == CLOSE_TAG_TOKEN {
-			log.Println("Close token", string(tagName))
-		}
+		case *CloseTag:
+			log.Println("Close tag", t.Name)
 
-		if tok.tt == OPEN_TAG_TOKEN {
-			log.Println("Open token", string(tagName))
-			for _, attrCur := range tok.attr {
-				key, value := tok.TagAttr(attrCur)
-				_, _ = key, value
-				log.Println("attr", string(key), string(value))
-			}
-		}
+		case *Text:
+			log.Println("Text", string(t.Data))
 
-		if tok.tt == TEXT_TOKEN {
-			log.Println("Text", string(tok.Text()))
 		}
 	}
 }
@@ -82,6 +78,7 @@ type ParserState uint8
 const (
 	NORMAL ParserState = iota
 	SCRIPT_CONTENT
+	TEXT_CONTENT
 )
 
 // `<` - terminal symbol
@@ -109,7 +106,8 @@ const (
 type Lexeme string
 
 const (
-	SCRIPT Lexeme = "script"
+	SCRIPT       Lexeme = "script"
+	CLOSE_SCRIPT Lexeme = "</script>"
 )
 
 type cursor struct {
@@ -124,34 +122,195 @@ type Tokenizer struct {
 	reader cursor
 	data   cursor
 	tt     TokenType
-
-	pendidngAttrKey   cursor
-	pendidngAttrValue cursor
-	attr              [][]cursor
-	state             ParserState
+	state  ParserState
 }
 
-func (tok *Tokenizer) TagAttr(cur []cursor) (key, val []byte) {
-	switch tok.tt {
-	case OPEN_TAG_TOKEN, SELF_CLOSING_TAG_TOKEN:
-		key := tok.buf[cur[0].start:cur[0].end]
-		val := tok.buf[cur[1].start:cur[1].end]
-		return key, val
+type tokenDataByteReader struct {
+	data   []byte
+	reader cursor
+	err    error
+}
+
+func (r *tokenDataByteReader) readByte() TerminalSymbol {
+	symbol := r.data[r.reader.end]
+
+	if r.reader.end > len(r.data) {
+		r.err = ErrCursorEnd
+		r.reader.end = len(r.data) - 1
+		return symbol
 	}
-	return nil, nil
+
+	r.reader.end++
+	return symbol
 }
 
-func (tok *Tokenizer) TagName() []byte {
-	if tok.data.start < tok.data.end {
-		switch tok.tt {
-		case OPEN_TAG_TOKEN, CLOSE_TAG_TOKEN, SELF_CLOSING_TAG_TOKEN:
-			b := tok.buf[tok.data.start:tok.data.end]
-			tok.data.start = tok.reader.end
-			tok.data.end = tok.reader.end
-			return b
+type OpenTag struct {
+	tokenDataByteReader
+
+	Name string
+	Attr map[string]string
+}
+
+func (t *OpenTag) unmarshalAttrKey() {
+	for {
+		symbol := t.readByte()
+
+		switch symbol {
+		case SPACE, NEW_LINE, C_RETURN, TAB, FORM_FEED, SLASH:
+			t.reader.end--
+			return
+		case EQUALS:
+			fallthrough
+		case R_BRACKET:
+			t.reader.end--
+			return
 		}
 	}
-	return nil
+}
+
+func (t *OpenTag) unmarshalAttrValue() {
+	for {
+		symbol := t.readByte()
+		if symbol != EQUALS {
+			t.reader.end--
+		}
+
+		quote := t.readByte()
+
+		switch quote {
+		case R_BRACKET:
+			t.reader.end--
+			return
+		case SINGLE_QUOTE, DOUBLE_QUOTE:
+			t.reader.start = t.reader.end
+
+			for {
+				symbol := t.readByte()
+
+				if symbol == quote {
+					t.reader.end--
+					return
+				}
+			}
+		}
+
+	}
+}
+
+func (t *OpenTag) unmarshalAttr() {
+	for {
+		t.reader.start = t.reader.end
+
+		symbol := t.readByte()
+		if symbol == '>' {
+			return
+		}
+
+		if symbol == SPACE {
+			t.reader.start++
+		}
+
+		t.unmarshalAttrKey()
+		attrKey := string(t.data[t.reader.start:t.reader.end])
+		t.reader.start = t.reader.end
+
+		t.unmarshalAttrValue()
+		attrValue := string(t.data[t.reader.start:t.reader.end])
+
+		quote := t.readByte()
+
+		switch quote {
+		case SINGLE_QUOTE, DOUBLE_QUOTE:
+		default:
+			t.reader.end--
+		}
+
+		if attrKey == "" || attrValue == "" {
+			continue
+		}
+
+		t.Attr[attrKey] = attrValue
+	}
+}
+
+func (t *OpenTag) unmarshalName() {
+	t.reader.start = t.reader.end
+
+loop:
+	for {
+		symbol := t.readByte()
+
+		switch symbol {
+		case SLASH, R_BRACKET, SPACE, NEW_LINE, C_RETURN, TAB, FORM_FEED:
+			t.reader.end--
+			break loop
+		default:
+		}
+	}
+
+	t.Name = string(t.data[t.reader.start:t.reader.end])
+}
+
+func (t *OpenTag) Unmarshal(data []byte) (err error) {
+	t.data = data
+
+	if symbol := t.readByte(); symbol != L_BRACKET {
+		return ErrMssingLeftBracket
+	}
+
+	t.unmarshalName()
+	if t.reader.end == len(t.data) {
+		return nil
+	}
+
+	t.Attr = make(map[string]string)
+
+	t.unmarshalAttr()
+
+	return err
+}
+
+type CloseTag struct {
+	tokenDataByteReader
+	Name string
+}
+
+func (t *CloseTag) unmarshalName() {
+	t.reader.start = t.reader.end
+
+loop:
+	for {
+		symbol := t.readByte()
+
+		switch symbol {
+		case R_BRACKET:
+			t.reader.end--
+			break loop
+		default:
+		}
+	}
+
+	t.Name = string(t.data[t.reader.start:t.reader.end])
+}
+
+func (t *CloseTag) Unmarshal(data []byte) (err error) {
+	t.data = data
+
+	if symbol := t.readByte(); symbol != L_BRACKET {
+		return ErrMssingLeftBracket
+	}
+
+	if symbol := t.readByte(); symbol != SLASH {
+		return ErrMssingLeftBracket
+	}
+
+	t.unmarshalName()
+
+	return err
+}
+
+type Text struct {
+	Data []byte
 }
 
 func (tok *Tokenizer) GetBuffer() ([]byte, int) {
@@ -179,7 +338,8 @@ func (tok *Tokenizer) readByte() byte {
 		buf, numElems := tok.GetBuffer()
 
 		if x := tok.reader.start; x != 0 {
-			tok.adjustRanges(x)
+			tok.data.start -= x
+			tok.data.end -= x
 		}
 
 		tok.reader.start, tok.reader.end, tok.buf = 0, numElems, buf[:numElems]
@@ -198,164 +358,29 @@ func (tok *Tokenizer) readByte() byte {
 	return b
 }
 
-func (tok *Tokenizer) adjustRanges(offset int) {
-	tok.data.start -= offset
-	tok.data.end -= offset
-
-	tok.pendidngAttrKey.start -= offset
-	tok.pendidngAttrKey.end -= offset
-	tok.pendidngAttrValue.start -= offset
-	tok.pendidngAttrValue.end -= offset
-
-	for _, attr := range tok.attr {
-		attr[0].start -= offset
-		attr[0].end -= offset
-		attr[1].start -= offset
-		attr[1].end -= offset
-	}
-}
-
-func (tok *Tokenizer) trace(b byte) {
-	log.Println(
-		string(b),
-		"tok.reader.start", tok.reader.start,
-		"tok.reader.end", tok.reader.end,
-		"tok.data.start", tok.data.start,
-		"tok.datta.end", tok.data.end,
-	)
-}
-
-func (tok *Tokenizer) tagName() {
-	for {
-		// Read ahead because a tag may consist of only one symbol,
-		// and we need to check now if the tag is complete or not.
-		var symbol TerminalSymbol = tok.readByte()
-		if tok.Err != nil {
-			tok.data.end = tok.reader.end
-			return
-		}
-
-		// tok.trace(symbol)
-
-		switch symbol {
-		case SPACE, NEW_LINE, C_RETURN, TAB, FORM_FEED: /* tag name is done, but it may have attribs */
-			tok.data.end = tok.reader.end - 1
-			return
-
-		case SLASH, R_BRACKET: /* Tag name actually done */
-			tok.reader.end--
-			tok.data.end = tok.reader.end
-			return
-		}
-	}
-}
-
-func (tok *Tokenizer) tagAttrKey() {
-	for {
-		var symbol TerminalSymbol = tok.readByte()
-		if tok.Err != nil {
-			tok.pendidngAttrKey.end = tok.reader.end
-			return
-		}
-
-		switch symbol {
-		case SPACE, NEW_LINE, C_RETURN, TAB, FORM_FEED, SLASH: /* Attr key without value */
-			tok.pendidngAttrKey.end = tok.reader.end - 1
-			return
-		case EQUALS:
-			// Current symbol `=` go to next symbol
-			if tok.pendidngAttrKey.start+1 == tok.reader.end {
-				continue
-			}
-			fallthrough
-		case R_BRACKET:
-			tok.reader.end--
-			tok.pendidngAttrKey.end = tok.reader.end
-			return
-		}
-	}
-}
-
-func (tok *Tokenizer) tagAttrVal() {
-	var symbol TerminalSymbol = tok.readByte()
-	if symbol != EQUALS {
-		tok.reader.end--
-		return
-	}
-	if tok.Err != nil {
-		tok.reader.end--
-		return
-	}
-
-	var quote TerminalSymbol = tok.readByte()
-	if tok.Err != nil {
-		tok.reader.end--
-		return
-	}
-
-	switch quote {
-	case R_BRACKET:
-		tok.reader.end--
-		return
-	case SINGLE_QUOTE, DOUBLE_QUOTE:
-		tok.pendidngAttrValue.start = tok.reader.end
-		for {
-			var symbol TerminalSymbol = tok.readByte()
-			if tok.Err != nil {
-				tok.pendidngAttrValue.end = tok.reader.end
-				return
-			}
-
-			if symbol == quote {
-				tok.pendidngAttrValue.end = tok.reader.end - 1
-				return
-			}
-		}
-		// TODO: make defautl case
-	}
-}
-
 func (tok *Tokenizer) tag() {
-	// Remember start pos of the tag name in buffer. -1 because first letter already consumed
-	tok.data.start = tok.reader.end - 1
+	tok.data.start = tok.reader.end - 2
 	tok.data.end = tok.reader.end
 
-	tok.attr = tok.attr[:0]
-
-	tok.tagName()
-	tok.skipSpace()
-	if tok.Err != nil {
-		return
-	}
-
+loop:
 	for {
 		var symbol TerminalSymbol = tok.readByte()
-		if tok.Err != nil || symbol == '>' {
+		if tok.Err != nil {
 			break
-		} else {
-			tok.reader.end--
 		}
 
-		tok.pendidngAttrKey.start = tok.reader.end
-		tok.pendidngAttrKey.end = tok.reader.end
-		tok.tagAttrKey()
+		switch symbol {
+		case SPACE:
+			continue
 
-		tok.pendidngAttrValue.start = tok.reader.end
-		tok.pendidngAttrValue.end = tok.reader.end
-		tok.tagAttrVal()
-
-		if tok.pendidngAttrKey.start != tok.pendidngAttrValue.end {
-			attr := make([]cursor, 2)
-			attr[0] = tok.pendidngAttrKey
-			attr[1] = tok.pendidngAttrValue
-			tok.attr = append(tok.attr, attr)
+		case R_BRACKET:
+			tok.data.end = tok.reader.end
+			break loop
 		}
-
-		tok.skipSpace()
 	}
 }
 
-func (tok *Tokenizer) Next() TokenType {
+func (tok *Tokenizer) Next() any {
 	tok.reader.start = tok.reader.end
 	tok.data.start = tok.reader.end
 	tok.data.end = tok.reader.end
@@ -386,7 +411,7 @@ func (tok *Tokenizer) Next() TokenType {
 		switch {
 		case 'a' <= symbol && symbol <= 'z' || 'A' <= symbol && symbol <= 'Z':
 			tokenType = OPEN_TAG_TOKEN
-		case symbol == '/':
+		case symbol == SLASH:
 			tokenType = CLOSE_TAG_TOKEN
 		case symbol == '!' || symbol == '?':
 			tokenType = COMMENT_TOKEN
@@ -395,64 +420,60 @@ func (tok *Tokenizer) Next() TokenType {
 			continue
 		}
 
+		if x := tok.reader.end - 2; tok.reader.start < x {
+			tok.reader.end = x
+			tok.data.end = x
+
+			text := &Text{Data: tok.buf[tok.data.start:tok.data.end]}
+
+			tok.tt = TEXT_TOKEN
+			return text
+		}
+
 		switch tokenType {
 		case OPEN_TAG_TOKEN:
+
 			if tok.state != NORMAL {
 				tok.tt = SKIP_TOKEN
 				return tok.tt
 			}
 			tok.tag()
 
-			var lexeme Lexeme = Lexeme(tok.buf[tok.data.start:tok.data.end])
-			log.Println("Lexme", lexeme)
+			bytes := tok.buf[tok.data.start:tok.data.end]
 
-			switch lexeme {
+			tag := &OpenTag{}
+			_ = tag.Unmarshal(bytes)
+
+			switch Lexeme(tag.Name) {
 			case SCRIPT:
 				tok.state = SCRIPT_CONTENT
 			}
 
 			tok.tt = OPEN_TAG_TOKEN
-			return tok.tt
+			return tag
 		case CLOSE_TAG_TOKEN:
-			// Discard `/` symbol
-			_ = tok.readByte()
-
 			tok.tag()
 			if tok.Err != nil {
 				tok.tt = ERROR_TOKEN
 				return tok.tt
 			}
 
+			bytes := tok.buf[tok.data.start:tok.data.end]
+
+			tag := &CloseTag{}
+			err := tag.Unmarshal(bytes)
+			log.Println("Close tag err", err)
+
 			tok.state = NORMAL
 			tok.tt = CLOSE_TAG_TOKEN
-			return tok.tt
+
+			return tag
 		default:
 		}
 	}
 
 	tok.tt = ERROR_TOKEN
 	return tok.tt
-}
-
-func (tok *Tokenizer) skipSpace() {
-	if tok.Err != nil {
-		return
-	}
-	// NOTE: may be here error
-	for {
-		b := tok.readByte()
-		if tok.Err != nil {
-			return
-		}
-
-		switch b {
-		case ' ', '\n', '\r', '\t', '\f':
-		default:
-			// If space not found return reader cursor back
-			tok.reader.end--
-			return
-		}
-	}
 }
 
 func (tok *Tokenizer) Text() []byte {
