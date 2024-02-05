@@ -3,9 +3,13 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"os"
+	"strings"
+	"sync"
+	"sync/atomic"
 )
 
 var (
@@ -24,13 +28,30 @@ func removeNewLine(source []byte) []byte {
 }
 
 func main() {
-	file, err := os.Open("_text1.html")
+	file, err := os.Open("_text.html")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer file.Close()
 
-	MyTokenizer(file)
+	var wg sync.WaitGroup
+	wg.Add(1)
+
+	result := make(chan *Node)
+
+	go func() {
+		defer wg.Done()
+
+		for r := range result {
+			traverse(r, 0)
+		}
+	}()
+
+	selectors := []string{"blog-item"}
+	Parse(file, selectors, result)
+	close(result)
+
+	wg.Wait()
 }
 
 // token -> lexem
@@ -38,8 +59,60 @@ func main() {
 // printf("Total = %d\n",score) ;
 // In this case printf in C. Literal pattern wrapped by " "
 
-func MyTokenizer(file io.Reader) {
+func containsClass(classString string, classSelectors []string) bool {
+	for _, selector := range classSelectors {
+		if strings.Contains(classString, selector) {
+			return true
+		}
+	}
+	return false
+}
+
+type NodeType string
+
+const (
+	CLOSE_NODE NodeType = "CLOSE_NODE"
+	OPEN_NODE  NodeType = "OPEN_NODE"
+)
+
+type Node struct {
+	Name    string
+	Type    NodeType
+	Tag     *OpenTag
+	Content string
+
+	next *Node
+}
+
+var OpenTagNames = make(map[string]*atomic.Int32)
+
+func getIndent(depth int) string {
+	return strings.Repeat("  ", depth)
+}
+
+func traverse(node *Node, indent int) {
+	if node != nil {
+		fmt.Printf("%s%s %s %+v\n", getIndent(indent), node.Name, node.Content, node.Tag.Attr)
+
+		if node.next != nil {
+			traverse(node.next, indent+1)
+		}
+	}
+}
+
+func lastChildOfNode(node *Node) *Node {
+	parentNode := node
+	for parentNode.next != nil {
+		parentNode = parentNode.next
+	}
+	return parentNode
+}
+
+func Parse(file io.Reader, classSelectors []string, result chan *Node) {
 	tok := NewTokenizer(file)
+
+	var nodes []*Node
+	var rootNode *Node
 
 	for {
 		token := tok.Next()
@@ -50,17 +123,68 @@ func MyTokenizer(file io.Reader) {
 
 		switch t := token.(type) {
 		case *OpenTag:
-			// log.Println("Open tag", t.Name)
+			node := &Node{Name: t.Name, Type: OPEN_NODE, Tag: t}
+			nodes = append(nodes, node)
+
+			tagNameCounter, tagNameExists := OpenTagNames[node.Name]
+			if !tagNameExists {
+				var counter atomic.Int32
+				counter.Add(1)
+				OpenTagNames[node.Name] = &counter
+			} else {
+				tagNameCounter.Add(1)
+			}
+
+			if rootNode == nil && len(classSelectors) > 0 && containsClass(t.Attr["class"], classSelectors) {
+				rootNode = node
+			}
 
 		case *CloseTag:
-			// log.Println("Close tag", t.Name)
+			if len(nodes) <= 0 || rootNode == nil {
+				continue
+			}
+
+			if _, tagNameExists := OpenTagNames[t.Name]; !tagNameExists {
+				continue
+			}
+
+			childNode := nodes[len(nodes)-1]
+			nodes = nodes[:len(nodes)-1]
+
+			for len(nodes) > 0 && childNode.Name != t.Name {
+				skippedNode := childNode
+
+				childNode = nodes[len(nodes)-1]
+				lastChild := lastChildOfNode(childNode)
+				lastChild.next = skippedNode
+
+				nodes = nodes[:len(nodes)-1]
+				if childNode.Name == t.Name {
+					break
+				}
+			}
+
+			if childNode.Name == t.Name {
+				if len(nodes) > 0 {
+					parentNode := nodes[len(nodes)-1]
+					lastChild := lastChildOfNode(parentNode)
+					lastChild.next = childNode
+				}
+			}
+
+			if childNode != nil && rootNode == childNode {
+				result <- rootNode
+				rootNode = nil
+				nodes = make([]*Node, 0)
+			}
 
 		case *Text:
-			// _ = t
-			// log.Println("Text", string(removeNewLine(t.Data)))
+			if len(nodes) > 0 {
+				childNode := nodes[len(nodes)-1]
+				childNode.Content = string(removeNewLine(t.Data))
+			}
 
 		case *Comment:
-			log.Println("Comment", string(removeNewLine(t.Data)))
 		}
 	}
 }
@@ -83,7 +207,6 @@ type ParserState uint8
 const (
 	NORMAL ParserState = iota
 	SCRIPT_CONTENT
-	TEXT_CONTENT
 )
 
 // `<` - terminal symbol
@@ -216,11 +339,11 @@ func (t *OpenTag) unmarshalAttr() {
 		}
 
 		t.unmarshalAttrKey()
-		attrKey := string(t.data[t.reader.start:t.reader.end])
+		attrKey := string(removeNewLine(t.data[t.reader.start:t.reader.end]))
 		t.reader.start = t.reader.end
 
 		t.unmarshalAttrValue()
-		attrValue := string(t.data[t.reader.start:t.reader.end])
+		attrValue := string(removeNewLine(t.data[t.reader.start:t.reader.end]))
 
 		quote := t.readByte()
 
