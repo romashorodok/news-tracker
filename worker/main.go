@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -27,25 +28,197 @@ func removeNewLine(source []byte) []byte {
 	return source
 }
 
+type CatalogExtractorConfig struct {
+	BaseURL          string   `json:"base_url"`
+	CatalogPageURL   string   `json:"catalog_page_url"`
+	ArticleSelectors []string `json:"article_selectors"`
+
+	DetailArticleSelectors []string               `json:"detail_article_selectors"`
+	ArticleExtractorConfig ArticleExtractorConfig `json:"article_extractor_config"`
+}
+
+const (
+	FIELD_TYPE_TITLE        = "title"
+	FIELD_TYPE_CONTENT      = "content"
+	FIELD_TYPE_PUBLISHED_AT = "published_at"
+	FIELD_TYPE_INFO         = "info"
+)
+
+type Field struct {
+	Type          string `json:"type"`
+	ClassSelector string `json:"class_selector"`
+}
+
+type ArticleExtractorConfig struct {
+	Fields []Field `json:"fields"`
+}
+
+type Article struct {
+	Title        string
+	Content      string
+	PublishedAt  string
+	ViewersCount string
+}
+
+type ArticlePageExtractor struct {
+	article Article
+}
+
+func (n *ArticlePageExtractor) OnContent(node *Node) {
+	var content string
+	for node := node; node != nil; node = node.next {
+		content += node.Content
+	}
+	n.article.Content = content
+}
+
+func (n *ArticlePageExtractor) OnTitle(node *Node) {
+	n.article.Title = node.next.Content
+}
+
+func (n *ArticlePageExtractor) OnPublishDate(node *Node) {
+	n.article.PublishedAt = node.next.Content
+}
+
+const VIEWERS_COUNT_SELECTOR = "ServicePeopleItem__icon ServicePeopleItem__icon_look"
+
+func (n *ArticlePageExtractor) OnInfo(node *Node) {
+	for node := node; node != nil; node = node.next {
+		if node.Tag.Attr == nil {
+			continue
+		}
+
+		if containsClass(node.Tag.Attr["class"], []string{VIEWERS_COUNT_SELECTOR}) {
+			n.article.ViewersCount = node.next.next.next.Content
+			return
+		}
+	}
+}
+
+func NewArticlePageExtractor() *ArticlePageExtractor {
+	return &ArticlePageExtractor{}
+}
+
+type CatalogExtractor struct {
+	DetailPageSelectors    []string
+	ArticleExtractorConfig ArticleExtractorConfig
+}
+
+func getDetailPageContent(path string) (io.ReadCloser, error) {
+	return os.Open(path)
+}
+
+func getRemoteDetailPage(path string) (io.ReadCloser, error) {
+	resp, err := http.Get(path)
+	if err != nil {
+		return nil, err
+	}
+	return resp.Body, nil
+}
+
+func (n *CatalogExtractor) onDetailPageNode(node *Node) {
+	//  Check if href has protocol prefix
+	url := "https:" + node.Tag.Attr["href"]
+
+	detailPage, err := getRemoteDetailPage(url)
+	// detailPage, err := getDetailPageContent("detail.html")
+	if err != nil {
+		return
+	}
+	defer detailPage.Close()
+	detailPageExtractor := NewArticlePageExtractor()
+
+	var selectors []Selector
+
+	for _, field := range n.ArticleExtractorConfig.Fields {
+		switch field.Type {
+		case FIELD_TYPE_TITLE:
+			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle))
+
+		case FIELD_TYPE_CONTENT:
+			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent))
+		case FIELD_TYPE_PUBLISHED_AT:
+			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate))
+		case FIELD_TYPE_INFO:
+			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo))
+		}
+	}
+
+	Parse(detailPage, selectors...)
+
+	log.Printf("%+v", detailPageExtractor.article)
+}
+
+func (n *CatalogExtractor) OnArticleNode(node *Node) {
+	for node := node; node != nil; node = node.next {
+		if containsClass(node.Tag.Attr["class"], n.DetailPageSelectors) {
+			n.onDetailPageNode(node)
+		}
+	}
+}
+
+func NewCatalogExtractor(config *CatalogExtractorConfig) *CatalogExtractor {
+	return &CatalogExtractor{
+		DetailPageSelectors:    config.DetailArticleSelectors,
+		ArticleExtractorConfig: config.ArticleExtractorConfig,
+	}
+}
+
 func main() {
-	file, err := os.Open("_text.html")
+	detail, err := os.Open("catalog.html")
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer file.Close()
+	defer detail.Close()
 
-	selectors := []string{"AllNewsItemService"}
+	config := &CatalogExtractorConfig{
+		ArticleSelectors: []string{"blog-item"},
+
+		DetailArticleSelectors: []string{"AllNewsItemInfo__name"},
+		ArticleExtractorConfig: ArticleExtractorConfig{
+			Fields: []Field{
+				{Type: FIELD_TYPE_TITLE, ClassSelector: "News__title"},
+				{Type: FIELD_TYPE_CONTENT, ClassSelector: "article-main-text"},
+				{Type: FIELD_TYPE_PUBLISHED_AT, ClassSelector: "PostInfo__item PostInfo__item_date"},
+				{Type: FIELD_TYPE_INFO, ClassSelector: "PostInfo__item PostInfo__item_service"},
+			},
+		},
+	}
+	pageExtractor := NewCatalogExtractor(config)
+
 	Parse(
-		file,
+		detail,
 
-		NewClassSelector(selectors, func(node *Node) {
-			traverse(node, 0)
-		}),
-
-		NewClassSelector(selectors, func(node *Node) {
-			traverse(node, 0)
-		}),
+		NewClassSelector(
+			config.ArticleSelectors,
+			pageExtractor.OnArticleNode,
+		),
 	)
+
+	// articlePage, err := os.Open("detail.html")
+	// if err != nil {
+	// 	log.Fatal(err)
+	// }
+	// defer articlePage.Close()
+	//
+	// detailPageExtractor := NewArticlePageExtractor()
+	// var selectors []Selector
+	//
+	// for _, field := range config.ArticleExtractorConfig.Fields {
+	// 	switch field.Type {
+	// 	case FIELD_TYPE_TITLE:
+	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle))
+	//
+	// 	case FIELD_TYPE_CONTENT:
+	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent))
+	// 	case FIELD_TYPE_PUBLISHED_AT:
+	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate))
+	// 	case FIELD_TYPE_INFO:
+	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo))
+	// 	}
+	// }
+	//
+	// Parse(articlePage, selectors...)
 }
 
 // token -> lexem
@@ -67,6 +240,7 @@ type NodeType string
 const (
 	CLOSE_NODE NodeType = "CLOSE_NODE"
 	OPEN_NODE  NodeType = "OPEN_NODE"
+	TEXT_NODE  NodeType = "TEXT_NODE"
 )
 
 type Node struct {
@@ -238,9 +412,12 @@ func (s *ClassSelector) OnOpen(node Node) {
 		return
 	}
 
-	if len(s.classes) > 0 && containsClass(node.Tag.Attr["class"], s.classes) {
+	if len(s.classes) > 0 {
+		if containsClass(node.Tag.Attr["class"], s.classes) {
+			s.ast.AppendOpenTag(node)
+		}
+	} else {
 		s.ast.AppendOpenTag(node)
-		return
 	}
 }
 
@@ -313,7 +490,12 @@ func Parse(file io.Reader, selectors ...Selector) {
 					if pendingNode == nil {
 						return
 					}
-					pendingNode.Content = string(removeNewLine(text.Data))
+					// Also that approach may be used.
+					// pendingNode.Content += string(removeNewLine(text.Data))
+
+					// Create separated text node may be more error resistant.
+					// That may prevent losing the text if something goes wrong.
+					selector.OnOpen(Node{Name: string(TEXT_NODE), Type: TEXT_NODE, Content: string(removeNewLine(text.Data))})
 				}(selector, t)
 			}
 			wg.Wait()
