@@ -34,9 +34,18 @@ func main() {
 	}
 	defer file.Close()
 
-	selectors := []string{"blog-item"}
-	// selectors := []string{"AllNewsItemService"}
-	Parse(file, selectors)
+	selectors := []string{"AllNewsItemService"}
+	Parse(
+		file,
+
+		NewClassSelector(selectors, func(node *Node) {
+			traverse(node, 0)
+		}),
+
+		NewClassSelector(selectors, func(node *Node) {
+			traverse(node, 0)
+		}),
+	)
 }
 
 // token -> lexem
@@ -63,7 +72,7 @@ const (
 type Node struct {
 	Name    string
 	Type    NodeType
-	Tag     *OpenTag
+	Tag     OpenTag
 	Content string
 
 	next *Node
@@ -78,7 +87,7 @@ type AstGenerator struct {
 	onTreeComplete  func(*Node)
 }
 
-func (t *AstGenerator) AppendOpenTag(node *Node) {
+func (t *AstGenerator) AppendOpenTag(node Node) {
 	t.nodesMu.Lock()
 	defer t.nodesMu.Unlock()
 
@@ -95,10 +104,10 @@ func (t *AstGenerator) AppendOpenTag(node *Node) {
 		tagNameCounter.Add(1)
 	}
 
-	t.nodes = append(t.nodes, node)
+	t.nodes = append(t.nodes, &node)
 
 	if t.rootNode == nil {
-		t.rootNode = node
+		t.rootNode = &node
 	}
 }
 
@@ -111,7 +120,7 @@ func (t *AstGenerator) nextNode() *Node {
 	return nil
 }
 
-func (t *AstGenerator) CloseTag(closingNode *Node) {
+func (t *AstGenerator) CloseTag(closingNode Node) {
 	t.nodesMu.Lock()
 	defer t.nodesMu.Unlock()
 
@@ -211,14 +220,56 @@ func lastChildOfNode(node *Node) *Node {
 	return parentNode
 }
 
-func Parse(file io.Reader, classSelectors []string) {
-	tok := NewTokenizer(file)
+type Selector interface {
+	OnOpen(Node)
+	OnClose(Node)
+	GetPendingNode() *Node
+}
 
-	ast := NewAstGenerator()
-	ast.OnTreeComplete(func(node *Node) {
-		ast.Free()
-		traverse(node, 0)
-	})
+type ClassSelector struct {
+	ast            *AstGenerator
+	classes        []string
+	treeCompleteFn func(*Node)
+}
+
+func (s *ClassSelector) OnOpen(node Node) {
+	if s.ast.IsBuilding() {
+		s.ast.AppendOpenTag(node)
+		return
+	}
+
+	if len(s.classes) > 0 && containsClass(node.Tag.Attr["class"], s.classes) {
+		s.ast.AppendOpenTag(node)
+		return
+	}
+}
+
+func (s *ClassSelector) OnClose(node Node) {
+	s.ast.CloseTag(node)
+}
+
+func (s *ClassSelector) GetPendingNode() *Node {
+	return s.ast.PendingNode()
+}
+
+func (s *ClassSelector) onTreeComplete(node *Node) {
+	s.ast.Free()
+	s.treeCompleteFn(node)
+}
+
+func NewClassSelector(classes []string, treeCompleteFn func(node *Node)) *ClassSelector {
+	selector := &ClassSelector{
+		ast:            NewAstGenerator(),
+		treeCompleteFn: treeCompleteFn,
+		classes:        classes,
+	}
+	selector.ast.OnTreeComplete(selector.onTreeComplete)
+	return selector
+}
+
+func Parse(file io.Reader, selectors ...Selector) {
+	tok := NewTokenizer(file)
+	var wg sync.WaitGroup
 
 	for {
 		token := tok.Next()
@@ -228,30 +279,44 @@ func Parse(file io.Reader, classSelectors []string) {
 		}
 
 		switch t := token.(type) {
-		case *OpenTag:
-			node := &Node{Name: t.Name, Type: OPEN_NODE, Tag: t}
-
-			if ast.IsBuilding() {
-				ast.AppendOpenTag(node)
-				continue
+		case OpenTag:
+			node := Node{Name: t.Name, Type: OPEN_NODE, Tag: t}
+			for _, selector := range selectors {
+				wg.Add(1)
+				go func(selector Selector, node Node) {
+					defer wg.Done()
+					selector.OnOpen(node)
+				}(selector, node)
 			}
+			wg.Wait()
 
-			if len(classSelectors) > 0 && containsClass(t.Attr["class"], classSelectors) {
-				ast.AppendOpenTag(node)
+		case CloseTag:
+			node := Node{Name: t.Name, Type: CLOSE_NODE}
+			for _, selector := range selectors {
+				wg.Add(1)
+				go func(selector Selector, node Node) {
+					defer wg.Done()
+					if selector.GetPendingNode() == nil {
+						return
+					}
+					selector.OnClose(node)
+				}(selector, node)
 			}
+			wg.Wait()
 
-		case *CloseTag:
-			if ast.PendingNode() == nil {
-				continue
+		case Text:
+			for _, selector := range selectors {
+				wg.Add(1)
+				go func(selector Selector, text Text) {
+					defer wg.Done()
+					pendingNode := selector.GetPendingNode()
+					if pendingNode == nil {
+						return
+					}
+					pendingNode.Content = string(removeNewLine(text.Data))
+				}(selector, t)
 			}
-			ast.CloseTag(&Node{Name: t.Name, Type: CLOSE_NODE})
-
-		case *Text:
-			pendingNode := ast.PendingNode()
-			if pendingNode == nil {
-				continue
-			}
-			pendingNode.Content = string(removeNewLine(t.Data))
+			wg.Wait()
 
 		case *Comment:
 		}
@@ -644,13 +709,13 @@ func (tok *Tokenizer) Next() any {
 			tok.data.end = x
 
 			tok.tt = TEXT_TOKEN
-			return &Text{Data: tok.buf[tok.data.start:tok.data.end]}
+			return Text{Data: tok.buf[tok.data.start:tok.data.end]}
 		}
 
 		switch tokenType {
 		case COMMENT_TOKEN:
 			tok.readUntilCloseBracket()
-			return &Comment{Data: tok.buf[tok.data.start:tok.data.end]}
+			return Comment{Data: tok.buf[tok.data.start:tok.data.end]}
 
 		case OPEN_TAG_TOKEN:
 
@@ -662,7 +727,7 @@ func (tok *Tokenizer) Next() any {
 
 			bytes := tok.buf[tok.data.start:tok.data.end]
 
-			tag := &OpenTag{}
+			tag := OpenTag{}
 			_ = tag.Unmarshal(bytes)
 
 			switch Lexeme(tag.Name) {
@@ -681,7 +746,7 @@ func (tok *Tokenizer) Next() any {
 
 			bytes := tok.buf[tok.data.start:tok.data.end]
 
-			tag := &CloseTag{}
+			tag := CloseTag{}
 			_ = tag.Unmarshal(bytes)
 
 			tok.state = NORMAL
