@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 var (
@@ -32,6 +33,7 @@ type CatalogExtractorConfig struct {
 	CatalogPageURL   string   `json:"catalog_page_url"`
 	ArticleSelectors []string `json:"article_selectors"`
 
+	DetailPagePullInterval int
 	DetailPageURLPrefix    string                 `json:"detail_page_url_prefix"`
 	DetailArticleSelectors []string               `json:"detail_article_selectors"`
 	ArticleExtractorConfig ArticleExtractorConfig `json:"article_extractor_config"`
@@ -112,9 +114,10 @@ func NewArticlePageExtractor() *ArticlePageExtractor {
 }
 
 type CatalogExtractor struct {
-	DetailPAgeURLPrefix    string
-	DetailPageSelectors    []string
-	ArticleExtractorConfig ArticleExtractorConfig
+	DetailPagePullIntervalTicker *time.Ticker
+	DetailPageURLPrefix          string
+	DetailPageSelectors          []string
+	ArticleExtractorConfig       ArticleExtractorConfig
 }
 
 func getDetailPageContent(path string) (io.ReadCloser, error) {
@@ -130,35 +133,38 @@ func getRemoteDetailPage(path string) (io.ReadCloser, error) {
 }
 
 func (n *CatalogExtractor) onDetailPageNode(node *Node) {
-	// url := n.DetailPAgeURLPrefix + node.Tag.Attr["href"]
-	// detailPage, err := getRemoteDetailPage(url)
+	select {
+	case <-n.DetailPagePullIntervalTicker.C:
+		// url := n.DetailPAgeURLPrefix + node.Tag.Attr["href"]
+		// detailPage, err := getRemoteDetailPage(url)
 
-	detailPage, err := getDetailPageContent("detail.html")
-	if err != nil {
-		return
-	}
-	defer detailPage.Close()
-	detailPageExtractor := NewArticlePageExtractor()
-
-	var selectors []Selector
-
-	for _, field := range n.ArticleExtractorConfig.Fields {
-		switch field.Type {
-		case FIELD_TYPE_TITLE:
-			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle(field)))
-
-		case FIELD_TYPE_CONTENT:
-			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent(field)))
-		case FIELD_TYPE_PUBLISHED_AT:
-			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate(field)))
-		case FIELD_TYPE_INFO:
-			selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo(field)))
+		detailPage, err := getDetailPageContent("detail.html")
+		if err != nil {
+			return
 		}
+		defer detailPage.Close()
+		detailPageExtractor := NewArticlePageExtractor()
+
+		var selectors []Selector
+
+		for _, field := range n.ArticleExtractorConfig.Fields {
+			switch field.Type {
+			case FIELD_TYPE_TITLE:
+				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle(field)))
+
+			case FIELD_TYPE_CONTENT:
+				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent(field)))
+			case FIELD_TYPE_PUBLISHED_AT:
+				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate(field)))
+			case FIELD_TYPE_INFO:
+				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo(field)))
+			}
+		}
+
+		Parse(detailPage, selectors...)
+
+		log.Printf("%+v", detailPageExtractor.article)
 	}
-
-	Parse(detailPage, selectors...)
-
-	log.Printf("%+v", detailPageExtractor.article)
 }
 
 func (n *CatalogExtractor) OnArticleNode(node *Node) {
@@ -170,10 +176,12 @@ func (n *CatalogExtractor) OnArticleNode(node *Node) {
 }
 
 func NewCatalogExtractor(config *CatalogExtractorConfig) *CatalogExtractor {
+	ticker := time.NewTicker(time.Duration(config.DetailPagePullInterval))
 	return &CatalogExtractor{
-		DetailPAgeURLPrefix:    config.DetailPageURLPrefix,
-		DetailPageSelectors:    config.DetailArticleSelectors,
-		ArticleExtractorConfig: config.ArticleExtractorConfig,
+		DetailPagePullIntervalTicker: ticker,
+		DetailPageURLPrefix:          config.DetailPageURLPrefix,
+		DetailPageSelectors:          config.DetailArticleSelectors,
+		ArticleExtractorConfig:       config.ArticleExtractorConfig,
 	}
 }
 
@@ -187,6 +195,8 @@ func main() {
 	config := &CatalogExtractorConfig{
 		ArticleSelectors: []string{"blog-item"},
 
+		// second - 1000000000
+		DetailPagePullInterval: 5000000000,
 		DetailPageURLPrefix:    "https:",
 		DetailArticleSelectors: []string{"AllNewsItemInfo__name"},
 		ArticleExtractorConfig: ArticleExtractorConfig{
