@@ -12,6 +12,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	nats "github.com/nats-io/nats.go"
+	"github.com/romashorodok/news-tracker/pkg/natsinfo"
+	"go.uber.org/fx"
 )
 
 var (
@@ -118,6 +122,7 @@ type CatalogExtractor struct {
 	DetailPageURLPrefix          string
 	DetailPageSelectors          []string
 	ArticleExtractorConfig       ArticleExtractorConfig
+	ArticleChan                  chan Article
 }
 
 func getDetailPageContent(path string) (io.ReadCloser, error) {
@@ -151,7 +156,6 @@ func (n *CatalogExtractor) onDetailPageNode(node *Node) {
 			switch field.Type {
 			case FIELD_TYPE_TITLE:
 				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle(field)))
-
 			case FIELD_TYPE_CONTENT:
 				selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent(field)))
 			case FIELD_TYPE_PUBLISHED_AT:
@@ -162,9 +166,12 @@ func (n *CatalogExtractor) onDetailPageNode(node *Node) {
 		}
 
 		Parse(detailPage, selectors...)
-
-		log.Printf("%+v", detailPageExtractor.article)
+		n.ArticleChan <- detailPageExtractor.article
 	}
+}
+
+func (n *CatalogExtractor) GetArticleChan() <-chan Article {
+	return n.ArticleChan
 }
 
 func (n *CatalogExtractor) OnArticleNode(node *Node) {
@@ -182,67 +189,110 @@ func NewCatalogExtractor(config *CatalogExtractorConfig) *CatalogExtractor {
 		DetailPageURLPrefix:          config.DetailPageURLPrefix,
 		DetailPageSelectors:          config.DetailArticleSelectors,
 		ArticleExtractorConfig:       config.ArticleExtractorConfig,
+		ArticleChan:                  make(chan Article),
 	}
 }
 
-func main() {
-	detail, err := os.Open("catalog.html")
-	if err != nil {
-		log.Fatal(err)
+type NatsConfig struct {
+	Port string
+	Host string
+}
+
+func (c *NatsConfig) GetURL() string {
+	if c.Host == "" || c.Port == "" {
+		return nats.DefaultURL
 	}
-	defer detail.Close()
+	return fmt.Sprintf("nats://%s:%s", c.Host, c.Port)
+}
 
-	config := &CatalogExtractorConfig{
-		ArticleSelectors: []string{"blog-item"},
+func NewNatsConfig() *NatsConfig {
+	return &NatsConfig{}
+}
 
-		// second - 1000000000
-		DetailPagePullInterval: 5000000000,
-		DetailPageURLPrefix:    "https:",
-		DetailArticleSelectors: []string{"AllNewsItemInfo__name"},
-		ArticleExtractorConfig: ArticleExtractorConfig{
-			Fields: []Field{
-				{Type: FIELD_TYPE_TITLE, ClassSelector: "News__title"},
-				{Type: FIELD_TYPE_CONTENT, ClassSelector: "article-main-text", IgnoredSentences: []string{"Отримуйте новини в Telegram"}},
-				{Type: FIELD_TYPE_PUBLISHED_AT, ClassSelector: "PostInfo__item PostInfo__item_date"},
-				{Type: FIELD_TYPE_INFO, ClassSelector: "PostInfo__item PostInfo__item_service"},
-			},
-		},
-	}
-	pageExtractor := NewCatalogExtractor(config)
+type NewNatsConnectionResult struct {
+	fx.Out
 
-	Parse(
-		detail,
+	Conn *nats.Conn
+	JS   nats.JetStreamContext
+}
 
-		NewClassSelector(
-			config.ArticleSelectors,
-			pageExtractor.OnArticleNode,
-		),
+func NewNatsConnection(config *NatsConfig) (NewNatsConnectionResult, error) {
+	conn, err := nats.Connect(config.GetURL(),
+		nats.Timeout(time.Second*5),
+		nats.RetryOnFailedConnect(true),
 	)
+	if err != nil {
+		return NewNatsConnectionResult{}, err
+	}
 
-	// articlePage, err := os.Open("detail.html")
-	// if err != nil {
-	// 	log.Fatal(err)
-	// }
-	// defer articlePage.Close()
-	//
-	// detailPageExtractor := NewArticlePageExtractor()
-	// var selectors []Selector
-	//
-	// for _, field := range config.ArticleExtractorConfig.Fields {
-	// 	switch field.Type {
-	// 	case FIELD_TYPE_TITLE:
-	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnTitle))
-	//
-	// 	case FIELD_TYPE_CONTENT:
-	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent))
-	// 	case FIELD_TYPE_PUBLISHED_AT:
-	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate))
-	// 	case FIELD_TYPE_INFO:
-	// 		selectors = append(selectors, NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo))
-	// 	}
-	// }
-	//
-	// Parse(articlePage, selectors...)
+	js, err := conn.JetStream()
+	if err != nil {
+		return NewNatsConnectionResult{}, err
+	}
+
+	if _, err = natsinfo.CreateStreamIfNotExists(js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
+		return NewNatsConnectionResult{}, err
+	}
+
+	return NewNatsConnectionResult{
+		Conn: conn,
+		JS:   js,
+	}, nil
+}
+
+func main() {
+	fx.New(
+		fx.Provide(
+			NewNatsConfig,
+			NewNatsConnection,
+		),
+
+		fx.Invoke(func(conn *nats.Conn, js nats.JetStreamContext) {
+			_ = js
+			_ = conn
+
+			detail, err := os.Open("catalog2.html")
+			if err != nil {
+				log.Fatal(err)
+			}
+			defer detail.Close()
+
+			config := &CatalogExtractorConfig{
+				ArticleSelectors: []string{"blog-item"},
+
+				// second - 1000000000
+				DetailPagePullInterval: 5000000000,
+				DetailPageURLPrefix:    "https:",
+				DetailArticleSelectors: []string{"AllNewsItemInfo__name"},
+				ArticleExtractorConfig: ArticleExtractorConfig{
+					Fields: []Field{
+						{Type: FIELD_TYPE_TITLE, ClassSelector: "News__title"},
+						{Type: FIELD_TYPE_CONTENT, ClassSelector: "article-main-text", IgnoredSentences: []string{"Отримуйте новини в Telegram"}},
+						{Type: FIELD_TYPE_PUBLISHED_AT, ClassSelector: "PostInfo__item PostInfo__item_date"},
+						{Type: FIELD_TYPE_INFO, ClassSelector: "PostInfo__item PostInfo__item_service"},
+					},
+				},
+			}
+			pageExtractor := NewCatalogExtractor(config)
+
+			go func() {
+				for article := range pageExtractor.GetArticleChan() {
+					subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
+					result, err := natsinfo.JsPublishJson(js, subject, article)
+					log.Printf("%+v %+v", result, err)
+				}
+			}()
+
+			Parse(
+				detail,
+
+				NewClassSelector(
+					config.ArticleSelectors,
+					pageExtractor.OnArticleNode,
+				),
+			)
+		}),
+	)
 }
 
 // token -> lexem

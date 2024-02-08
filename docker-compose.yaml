@@ -1,0 +1,15 @@
+
+services:
+  nats:
+    image: nats:2.10.10-alpine3.19
+    command:
+      - "-js"
+      - "-sd"
+      - "/var/local/nats"
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+      - "6222:6222"
+    volumes:
+      - ".data/nats:/var/local/nats"
+
