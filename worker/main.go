@@ -14,6 +14,7 @@ import (
 	"time"
 
 	nats "github.com/nats-io/nats.go"
+	"github.com/romashorodok/news-tracker/pkg/dateutils"
 	"github.com/romashorodok/news-tracker/pkg/natsinfo"
 	"go.uber.org/fx"
 )
@@ -92,7 +93,12 @@ func (n *ArticlePageExtractor) OnTitle(field Field) func(*Node) {
 
 func (n *ArticlePageExtractor) OnPublishDate(field Field) func(*Node) {
 	return func(node *Node) {
-		n.article.PublishedAt = node.next.Content
+		date, err := dateutils.ParseDateUA(node.next.Content)
+		if err != nil {
+			n.article.PublishedAt = dateutils.ToString(time.Now())
+			return
+		}
+		n.article.PublishedAt = dateutils.ToString(date)
 	}
 }
 
@@ -248,9 +254,6 @@ func main() {
 		),
 
 		fx.Invoke(func(conn *nats.Conn, js nats.JetStreamContext) {
-			_ = js
-			_ = conn
-
 			detail, err := os.Open("catalog2.html")
 			if err != nil {
 				log.Fatal(err)
