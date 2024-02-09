@@ -69,7 +69,7 @@ func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 			case FIELD_TYPE_CONTENT:
 				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent(field)))
 			case FIELD_TYPE_PREFACE:
-				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContent(field)))
+				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPreface(field)))
 			case FIELD_TYPE_PUBLISHED_AT:
 				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate(field)))
 			case FIELD_TYPE_INFO:
