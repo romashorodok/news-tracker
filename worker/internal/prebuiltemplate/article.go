@@ -9,11 +9,13 @@ import (
 )
 
 const (
-	FIELD_TYPE_TITLE        = "title"
-	FIELD_TYPE_PREFACE      = "preface"
-	FIELD_TYPE_CONTENT      = "content"
-	FIELD_TYPE_PUBLISHED_AT = "published_at"
-	FIELD_TYPE_INFO         = "info"
+	FIELD_TYPE_TITLE          = "title"
+	FIELD_TYPE_PREFACE        = "preface"
+	FIELD_TYPE_CONTENT        = "content"
+	FIELD_TYPE_PUBLISHED_AT   = "published_at"
+	FIELD_TYPE_INFO           = "info"
+	FIELD_TYPE_MAIN_IMAGE     = "main_image"
+	FIELD_TYPE_CONTENT_IMAGES = "content_images"
 )
 
 type Field struct {
@@ -27,15 +29,46 @@ type ArticleExtractorConfig struct {
 }
 
 type Article struct {
-	Title        string
-	Preface      string
-	Content      string
-	PublishedAt  string
-	ViewersCount string
+	Title         string   `json:"title"`
+	Preface       string   `json:"preface"`
+	Content       string   `json:"content"`
+	PublishedAt   string   `json:"published_at"`
+	ViewersCount  string   `json:"viewers_count"`
+	MainImage     string   `json:"main_image"`
+	ContentImages []string `json:"content_images,omitempty"`
 }
 
 type ArticlePageExtractor struct {
 	article Article
+	config  NewsFeedConfig
+}
+
+func (n *ArticlePageExtractor) OnMainImage(field Field) func(*parser.Node) {
+	return func(node *parser.Node) {
+		for node := node; node != nil; node = node.Next {
+			if node.Name == "img" {
+				if node.Tag.Attr == nil {
+					continue
+				}
+				n.article.MainImage = n.config.ArticlePrefixURL + node.Tag.Attr["src"]
+				break
+			}
+		}
+	}
+}
+
+func (n *ArticlePageExtractor) OnContentImages(field Field) func(*parser.Node) {
+	return func(node *parser.Node) {
+		for node := node; node != nil; node = node.Next {
+			if node.Name == "img" {
+				if node.Tag.Attr == nil {
+					continue
+				}
+				img := n.config.ArticlePrefixURL + node.Tag.Attr["src"]
+				n.article.ContentImages = append(n.article.ContentImages, img)
+			}
+		}
+	}
 }
 
 func (n *ArticlePageExtractor) OnContent(field Field) func(*parser.Node) {
@@ -91,6 +124,8 @@ func (n *ArticlePageExtractor) OnInfo(field Field) func(*parser.Node) {
 	}
 }
 
-func NewArticlePageExtractor() *ArticlePageExtractor {
-	return &ArticlePageExtractor{}
+func NewArticlePageExtractor(config NewsFeedConfig) *ArticlePageExtractor {
+	return &ArticlePageExtractor{
+		config: config,
+	}
 }

@@ -58,7 +58,7 @@ func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 			return
 		}
 		defer detailPage.Close()
-		detailPageExtractor := NewArticlePageExtractor()
+		detailPageExtractor := NewArticlePageExtractor(n.config)
 
 		var selectors []parser.Selector
 
@@ -74,6 +74,10 @@ func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnPublishDate(field)))
 			case FIELD_TYPE_INFO:
 				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnInfo(field)))
+			case FIELD_TYPE_MAIN_IMAGE:
+				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnMainImage(field)))
+			case FIELD_TYPE_CONTENT_IMAGES:
+				selectors = append(selectors, selector.NewClassSelector([]string{field.ClassSelector}, detailPageExtractor.OnContentImages(field)))
 			}
 		}
 
