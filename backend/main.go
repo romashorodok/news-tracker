@@ -82,16 +82,10 @@ func NewDatabaseConnection(params NewDatabaseConnectionParams) (*sql.DB, error) 
 	return conn, nil
 }
 
-func NewNatsLocalhostConfig() *natsinfo.NatsConfig {
-	conf := natsinfo.NewNatsConfig()
-	conf.Host = "localhost"
-	return conf
-}
-
 func main() {
 	<-fx.New(
 		fx.Provide(
-			NewNatsLocalhostConfig,
+			natsinfo.NewNatsConfig,
 			natsinfo.NewNatsConnection,
 
 			NewDatabaseConfig,
