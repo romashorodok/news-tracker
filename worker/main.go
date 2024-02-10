@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -109,7 +110,8 @@ func main() {
 					go newsFeed.Start(context.Background())
 
 					for article := range newsFeed.GetArticleChan() {
-						subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
+                        origin := strings.ReplaceAll(article.Origin, ".", "_")
+						subject := natsinfo.ArticlesStream_NewArticleSubject(origin, article.Title)
 						result, err := natsinfo.JsPublishJson(js, subject, article)
 						log.Printf("Publish into nats %+v %+v", result, err)
 						log.Printf("%+v", article)
