@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -26,7 +25,10 @@ func (c *NatsConfig) GetURL() string {
 }
 
 func NewNatsConfig() *NatsConfig {
-	return &NatsConfig{}
+	return &NatsConfig{
+		Host: "nats",
+		Port: "4222",
+	}
 }
 
 type NewNatsConnectionResult struct {
@@ -38,7 +40,7 @@ type NewNatsConnectionResult struct {
 
 func NewNatsConnection(config *NatsConfig) (NewNatsConnectionResult, error) {
 	conn, err := nats.Connect(config.GetURL(),
-		nats.Timeout(time.Second*5),
+		nats.Timeout(time.Second*30),
 		nats.RetryOnFailedConnect(true),
 	)
 	if err != nil {
@@ -50,9 +52,22 @@ func NewNatsConnection(config *NatsConfig) (NewNatsConnectionResult, error) {
 		return NewNatsConnectionResult{}, err
 	}
 
-	if _, err = natsinfo.CreateStreamIfNotExists(js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
-		return NewNatsConnectionResult{}, err
-	}
+	go func() {
+		ticker := time.NewTicker(time.Millisecond * 10)
+		done := time.NewTimer(time.Second * 30)
+		for {
+            log.Println(conn.Status())
+			select {
+			case <-done.C:
+				panic("Unable establish nats connection")
+			case <-ticker.C:
+				if _, err = natsinfo.CreateStreamIfNotExists(js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
+					continue
+				}
+				return
+			}
+		}
+	}()
 
 	return NewNatsConnectionResult{
 		Conn: conn,
@@ -61,7 +76,7 @@ func NewNatsConnection(config *NatsConfig) (NewNatsConnectionResult, error) {
 }
 
 func main() {
-	fx.New(
+	<-fx.New(
 		fx.Provide(
 			NewNatsConfig,
 			NewNatsConnection,
@@ -82,18 +97,18 @@ func main() {
 
 			log.Printf("Running with the config: %+v", prebuiltemplateConfig)
 
-			for _, config := range prebuiltemplateConfig {
-				newsFeed := prebuiltemplate.NewNewsFeedProcessor(config)
-				go newsFeed.Start(context.Background())
-
-				for article := range newsFeed.GetArticleChan() {
-					subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
-					result, err := natsinfo.JsPublishJson(js, subject, article)
-					log.Printf("Publish into nats %+v %+v", result, err)
-					log.Printf("%+v", article)
-				}
-
-			}
+			// for _, config := range prebuiltemplateConfig {
+			// 	newsFeed := prebuiltemplate.NewNewsFeedProcessor(config)
+			// 	go newsFeed.Start(context.Background())
+			//
+			// 	for article := range newsFeed.GetArticleChan() {
+			// 		subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
+			// 		result, err := natsinfo.JsPublishJson(js, subject, article)
+			// 		log.Printf("Publish into nats %+v %+v", result, err)
+			// 		log.Printf("%+v", article)
+			// 	}
+			//
+			// }
 		}),
-	)
+	).Wait()
 }

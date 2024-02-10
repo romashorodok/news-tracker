@@ -1,4 +1,7 @@
 
+networks:
+  bridge:
+
 services:
   nats:
     image: nats:2.10.10-alpine3.19
@@ -12,4 +15,20 @@ services:
       - "6222:6222"
     volumes:
       - ".data/nats:/var/local/nats"
+    networks:
+        - bridge
+
+  worker:
+    build:
+      target: worker
+    command:
+      - "-template"
+      - ${CONFIG}
+    networks:
+        - bridge
+    develop:
+      watch:
+        - action: rebuild
+          path: ./worker
+          target: /app/worker
 
