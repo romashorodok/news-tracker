@@ -20,7 +20,7 @@ type ArticlesParams struct {
 }
 
 func (q *Queries) Articles(ctx context.Context, arg ArticlesParams) ([]Article, error) {
-	rows, err := q.db.QueryContext(ctx, articles, arg.SqlOffset, arg.SqlLimit)
+	rows, err := q.query(ctx, q.articlesStmt, articles, arg.SqlOffset, arg.SqlLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -57,7 +57,7 @@ SELECT id, title, preface, content, origin, viewers_count, created_at, updated_a
 `
 
 func (q *Queries) GetArticleByID(ctx context.Context, id int64) (Article, error) {
-	row := q.db.QueryRowContext(ctx, getArticleByID, id)
+	row := q.queryRow(ctx, q.getArticleByIDStmt, getArticleByID, id)
 	var i Article
 	err := row.Scan(
 		&i.ID,
@@ -75,12 +75,12 @@ func (q *Queries) GetArticleByID(ctx context.Context, id int64) (Article, error)
 
 const newArticle = `-- name: NewArticle :one
 
-INSERT INTO articles ( 
+INSERT INTO articles (
     title, preface, content,
-    origin, viewers_count, published_at 
-) VALUES ( 
+    origin, viewers_count, published_at
+) VALUES (
     $1, $2, $3,
-    $4, $5, $6 
+    $4, $5, $6
 ) RETURNING id
 `
 
@@ -95,7 +95,7 @@ type NewArticleParams struct {
 
 // https://docs.sqlc.dev/en/stable/reference/query-annotations.html
 func (q *Queries) NewArticle(ctx context.Context, arg NewArticleParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, newArticle,
+	row := q.queryRow(ctx, q.newArticleStmt, newArticle,
 		arg.Title,
 		arg.Preface,
 		arg.Content,
@@ -111,7 +111,7 @@ func (q *Queries) NewArticle(ctx context.Context, arg NewArticleParams) (int64, 
 const newArticleImage = `-- name: NewArticleImage :one
 INSERT INTO article_images (
     article_id, url
-) VALUES ( 
+) VALUES (
     $1, $2
 ) RETURNING id
 `
@@ -122,7 +122,7 @@ type NewArticleImageParams struct {
 }
 
 func (q *Queries) NewArticleImage(ctx context.Context, arg NewArticleImageParams) (int64, error) {
-	row := q.db.QueryRowContext(ctx, newArticleImage, arg.ArticleID, arg.Url)
+	row := q.queryRow(ctx, q.newArticleImageStmt, newArticleImage, arg.ArticleID, arg.Url)
 	var id int64
 	err := row.Scan(&id)
 	return id, err

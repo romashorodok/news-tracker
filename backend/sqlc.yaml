@@ -1,6 +1,10 @@
-version: "1"
-packages:
-  - path: "./internal/storage"
-    schema: "./storage/schema"
-    queries: "./storage/query"
-    engine: "postgresql"
+version: "2"
+sql:
+  - engine: "postgresql"
+    schema: "./migrations"
+    queries: "./internal/storage/queries"
+    gen:
+      go:
+        package: "storage"
+        out: "./internal/storage"
+        emit_prepared_queries: true
