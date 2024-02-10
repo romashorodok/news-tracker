@@ -111,6 +111,7 @@ func (n *NewsFeedProcessor) GetArticleChan() <-chan Article {
 }
 
 func (n *NewsFeedProcessor) Start(ctx context.Context) {
+	defer close(n.ArticleChan)
 	for {
 		select {
 		case <-ctx.Done():

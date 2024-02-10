@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"time"
@@ -72,36 +73,26 @@ func main() {
 			// minute      - 60000000000
 			// 10 * minute - 600000000000
 
-			// Image content
-			// article-main-image NewsImg
-			// inside the article-main-text imgwrapper
-
-			config := prebuiltemplate.NewsFeedConfig{
-				NewsFeedURL:             "",
-				NewsFeedRefreshInterval: 600000000000,
-				NewsFeedArticleSelector: []string{"blog-item"},
-
-				ArticleConfig: prebuiltemplate.ArticleConfig{
-					Fields: []prebuiltemplate.Field{
-						{Type: prebuiltemplate.FIELD_TYPE_TITLE, ClassSelector: "News__title"},
-						{Type: prebuiltemplate.FIELD_TYPE_PREFACE, ClassSelector: "article-main-intro"},
-						{Type: prebuiltemplate.FIELD_TYPE_CONTENT, ClassSelector: "article-main-text", IgnoredSentences: []string{"Отримуйте новини в Telegram", "Наші новини є у Facebook", "Дивіться нас на YouTube"}},
-						{Type: prebuiltemplate.FIELD_TYPE_PUBLISHED_AT, ClassSelector: "PostInfo__item PostInfo__item_date"},
-						{Type: prebuiltemplate.FIELD_TYPE_INFO, ClassSelector: "PostInfo__item PostInfo__item_service"},
-					},
-				},
-				ArticlePrefixURL:    "https:",
-				ArticlePullInterval: 30000000000,
-				ArticlePageSelector: []string{"AllNewsItemInfo__name"},
+			var prebuiltemplateConfig prebuiltemplate.ConfigFlag
+			flag.Var(&prebuiltemplateConfig, "template", "Enter config for parsing the source")
+			flag.Parse()
+			if len(prebuiltemplateConfig) == 0 {
+				panic("Enter config for parsing the source by `-template` flag")
 			}
 
-			newsFeed := prebuiltemplate.NewNewsFeedProcessor(config)
-			go newsFeed.Start(context.Background())
+			log.Printf("Running with the config: %+v", prebuiltemplateConfig)
 
-			for article := range newsFeed.GetArticleChan() {
-				subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
-				result, err := natsinfo.JsPublishJson(js, subject, article)
-				log.Printf("Publish into nats %+v %+v", result, err)
+			for _, config := range prebuiltemplateConfig {
+				newsFeed := prebuiltemplate.NewNewsFeedProcessor(config)
+				go newsFeed.Start(context.Background())
+
+				for article := range newsFeed.GetArticleChan() {
+					subject := natsinfo.ArticlesStream_NewArticleSubject("test", article.Title)
+					result, err := natsinfo.JsPublishJson(js, subject, article)
+					log.Printf("Publish into nats %+v %+v", result, err)
+					log.Printf("%+v", article)
+				}
+
 			}
 		}),
 	)
