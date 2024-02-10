@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/romashorodok/news-tracker/worker/pkg/parser"
@@ -35,10 +36,11 @@ type NewsFeedConfig struct {
 }
 
 type NewsFeedProcessor struct {
-	NewsFeedRefreshIntervalTicker *time.Ticker
-	ArticlePullIntervalTicker     *time.Ticker
-	config                        NewsFeedConfig
 	ArticleChan                   chan Article
+	newsFeedRefreshIntervalTicker *time.Ticker
+	articlePullIntervalTicker     *time.Ticker
+	config                        NewsFeedConfig
+	origin                        string
 }
 
 // Process the article node which point to the detail page
@@ -48,7 +50,7 @@ type NewsFeedProcessor struct {
 // NewsFeedConfig.ArticlePageSelector must be the `article-button` to select the node here
 func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 	select {
-	case <-n.ArticlePullIntervalTicker.C:
+	case <-n.articlePullIntervalTicker.C:
 		url := n.config.ArticlePrefixURL + node.Tag.Attr["href"]
 		log.Println("Get article page at", url)
 
@@ -82,7 +84,9 @@ func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 		}
 
 		parser.Parse(detailPage, selectors...)
-		n.ArticleChan <- detailPageExtractor.article
+        article := detailPageExtractor.article
+        article.Origin = n.origin
+		n.ArticleChan <- article
 	}
 }
 
@@ -112,11 +116,14 @@ func (n *NewsFeedProcessor) GetArticleChan() <-chan Article {
 
 func (n *NewsFeedProcessor) Start(ctx context.Context) {
 	defer close(n.ArticleChan)
+	url := n.config.NewsFeedURL
+    n.origin = strings.Split(strings.SplitAfter(url, "//")[1], "/")[0]
 	for {
+		log.Printf("Next news feed refresh at %s", time.Now().Add(time.Duration(n.config.NewsFeedRefreshInterval)))
 		select {
 		case <-ctx.Done():
 			return
-		case <-n.NewsFeedRefreshIntervalTicker.C:
+		case <-n.newsFeedRefreshIntervalTicker.C:
 			log.Println("Refresh news feed page", n.config.NewsFeedURL)
 			resp, err := getRemotePage(n.config.NewsFeedURL)
 			if err != nil {
@@ -135,10 +142,10 @@ func (n *NewsFeedProcessor) Start(ctx context.Context) {
 
 func NewNewsFeedProcessor(config NewsFeedConfig) *NewsFeedProcessor {
 	return &NewsFeedProcessor{
-		NewsFeedRefreshIntervalTicker: time.NewTicker(
+		newsFeedRefreshIntervalTicker: time.NewTicker(
 			time.Duration(config.NewsFeedRefreshInterval),
 		),
-		ArticlePullIntervalTicker: time.NewTicker(
+		articlePullIntervalTicker: time.NewTicker(
 			time.Duration(config.ArticlePullInterval),
 		),
 		config:      config,

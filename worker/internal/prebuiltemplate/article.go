@@ -36,6 +36,7 @@ type Article struct {
 	ViewersCount  string   `json:"viewers_count"`
 	MainImage     string   `json:"main_image"`
 	ContentImages []string `json:"content_images,omitempty"`
+	Origin        string   `json:"origin"`
 }
 
 type ArticlePageExtractor struct {

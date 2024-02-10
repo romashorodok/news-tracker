@@ -31,4 +31,7 @@ services:
         - action: rebuild
           path: ./worker
           target: /app/worker
+        - action: rebuild
+          path: ./pkg
+          target: /app/pkg
 
