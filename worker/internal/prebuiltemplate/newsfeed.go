@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/romashorodok/news-tracker/pkg/natsinfo"
 	"github.com/romashorodok/news-tracker/worker/pkg/parser"
 	"github.com/romashorodok/news-tracker/worker/pkg/parser/selector"
 )
@@ -36,7 +37,7 @@ type NewsFeedConfig struct {
 }
 
 type NewsFeedProcessor struct {
-	ArticleChan                   chan Article
+	ArticleChan                   chan natsinfo.Article
 	newsFeedRefreshIntervalTicker *time.Ticker
 	articlePullIntervalTicker     *time.Ticker
 	config                        NewsFeedConfig
@@ -84,8 +85,8 @@ func (n *NewsFeedProcessor) onArticlePageNode(node *parser.Node) {
 		}
 
 		parser.Parse(detailPage, selectors...)
-        article := detailPageExtractor.article
-        article.Origin = n.origin
+		article := detailPageExtractor.article
+		article.Origin = n.origin
 		n.ArticleChan <- article
 	}
 }
@@ -110,14 +111,14 @@ func (n *NewsFeedProcessor) onNewsFeedArticleNode(node *parser.Node) {
 	}
 }
 
-func (n *NewsFeedProcessor) GetArticleChan() <-chan Article {
+func (n *NewsFeedProcessor) GetArticleChan() <-chan natsinfo.Article {
 	return n.ArticleChan
 }
 
 func (n *NewsFeedProcessor) Start(ctx context.Context) {
 	defer close(n.ArticleChan)
 	url := n.config.NewsFeedURL
-    n.origin = strings.Split(strings.SplitAfter(url, "//")[1], "/")[0]
+	n.origin = strings.Split(strings.SplitAfter(url, "//")[1], "/")[0]
 	for {
 		log.Printf("Next news feed refresh at %s", time.Now().Add(time.Duration(n.config.NewsFeedRefreshInterval)))
 		select {
@@ -149,6 +150,6 @@ func NewNewsFeedProcessor(config NewsFeedConfig) *NewsFeedProcessor {
 			time.Duration(config.ArticlePullInterval),
 		),
 		config:      config,
-		ArticleChan: make(chan Article),
+		ArticleChan: make(chan natsinfo.Article),
 	}
 }

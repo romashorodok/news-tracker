@@ -2,7 +2,8 @@ package executils
 
 import "sync"
 
-func BatchExec[T any](vals []T, batchSize int, fn func(T)) {
+func BatchExec[T any](vals []T, fn func(T)) {
+	batchSize := len(vals)
 	var wg sync.WaitGroup
 	workerPool := make(chan struct{}, batchSize)
 	defer close(workerPool)

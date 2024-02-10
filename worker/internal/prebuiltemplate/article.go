@@ -1,10 +1,12 @@
 package prebuiltemplate
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/romashorodok/news-tracker/pkg/dateutils"
+	"github.com/romashorodok/news-tracker/pkg/natsinfo"
 	"github.com/romashorodok/news-tracker/worker/pkg/parser"
 )
 
@@ -28,19 +30,8 @@ type ArticleExtractorConfig struct {
 	Fields []Field `json:"fields"`
 }
 
-type Article struct {
-	Title         string   `json:"title"`
-	Preface       string   `json:"preface"`
-	Content       string   `json:"content"`
-	PublishedAt   string   `json:"published_at"`
-	ViewersCount  string   `json:"viewers_count"`
-	MainImage     string   `json:"main_image"`
-	ContentImages []string `json:"content_images,omitempty"`
-	Origin        string   `json:"origin"`
-}
-
 type ArticlePageExtractor struct {
-	article Article
+	article natsinfo.Article
 	config  NewsFeedConfig
 }
 
@@ -101,10 +92,10 @@ func (n *ArticlePageExtractor) OnPublishDate(field Field) func(*parser.Node) {
 	return func(node *parser.Node) {
 		date, err := dateutils.ParseDateUA(node.Next.Content)
 		if err != nil {
-			n.article.PublishedAt = dateutils.ToString(time.Now())
+			n.article.PublishedAt = time.Now()
 			return
 		}
-		n.article.PublishedAt = dateutils.ToString(date)
+		n.article.PublishedAt = date
 	}
 }
 
@@ -118,7 +109,13 @@ func (n *ArticlePageExtractor) OnInfo(field Field) func(*parser.Node) {
 			}
 
 			if parser.ContainsClass(node.Tag.Attr["class"], []string{VIEWERS_COUNT_SELECTOR}) {
-				n.article.ViewersCount = node.Next.Next.Next.Content
+				viewersCount, err := strconv.Atoi(node.Next.Next.Next.Content)
+				if err != nil {
+					n.article.ViewersCount = 0
+					return
+				}
+
+				n.article.ViewersCount = viewersCount
 				return
 			}
 		}

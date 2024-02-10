@@ -1,27 +1,29 @@
 package natsinfo
 
 import (
-	"encoding/json"
 	"errors"
 
 	nats "github.com/nats-io/nats.go"
 )
 
-func CreateStreamIfNotExists(js nats.JetStreamContext, config *nats.StreamConfig) (*nats.StreamInfo, error) {
-	info, err := js.StreamInfo(config.Name)
+func CreateOrUpdateStream(js nats.JetStreamContext, config *nats.StreamConfig) (*nats.StreamInfo, error) {
+	info, err := js.AddStream(config)
 
 	switch {
-	case errors.Is(err, nats.ErrStreamNotFound):
-		info, err = js.AddStream(config)
+	case errors.Is(err, nats.ErrStreamNameAlreadyInUse):
+		info, err = js.UpdateStream(config)
 	}
 
 	return info, err
 }
 
-func JsPublishJson(js nats.JetStreamContext, subject string, payload interface{}) (*nats.PubAck, error) {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return nil, err
+func CreateOrUpdateConsumer(js nats.JetStreamContext, stream string, config *nats.ConsumerConfig, opts ...nats.JSOpt) (*nats.ConsumerInfo, error) {
+	info, err := js.AddConsumer(stream, config, opts...)
+
+	switch {
+	case errors.Is(err, nats.ErrConsumerNameAlreadyInUse):
+		info, err = js.UpdateConsumer(stream, config, opts...)
 	}
-	return js.Publish(subject, data)
+
+	return info, err
 }
