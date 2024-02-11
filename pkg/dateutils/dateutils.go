@@ -2,6 +2,7 @@ package dateutils
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -150,4 +151,16 @@ func ToString(t time.Time) string {
 
 func ParseString(str string) (time.Time, error) {
 	return time.Parse(time.Layout, str)
+}
+
+func Pretify(t time.Time) string {
+	month := t.Month()
+    var monthStr string
+	if month < 10 {
+        monthStr = fmt.Sprintf("0%d", month)
+	} else {
+        monthStr = fmt.Sprint(month)
+    }
+
+	return fmt.Sprintf("%d:%d %d-%s-%d", t.Hour(), t.Minute(), t.Day(), monthStr, t.Year())
 }

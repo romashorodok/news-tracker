@@ -7,6 +7,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 )
 
@@ -72,12 +73,40 @@ func (q *Queries) AttachArticleImage(ctx context.Context, arg AttachArticleImage
 }
 
 const getArticleByID = `-- name: GetArticleByID :one
-SELECT id, title, preface, content, origin, viewers_count, created_at, updated_at, published_at FROM articles where id = $1
+SELECT id, title, preface, content, origin, viewers_count, created_at, updated_at, published_at, (
+    SELECT
+        array_to_json(array_agg(row_to_json(images))) AS json_array
+    FROM (
+        SELECT images.url, article_images.main
+        FROM images
+        JOIN (
+            SELECT DISTINCT main, image_id
+            FROM article_images
+            WHERE article_id = $1
+        ) AS article_images
+        ON images.id = article_images.image_id
+    ) as images
+) as images
+FROM articles
+WHERE articles.id = $1
 `
 
-func (q *Queries) GetArticleByID(ctx context.Context, id int64) (Article, error) {
+type GetArticleByIDRow struct {
+	ID           int64
+	Title        string
+	Preface      string
+	Content      string
+	Origin       string
+	ViewersCount int32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	PublishedAt  time.Time
+	Images       json.RawMessage
+}
+
+func (q *Queries) GetArticleByID(ctx context.Context, id int64) (GetArticleByIDRow, error) {
 	row := q.queryRow(ctx, q.getArticleByIDStmt, getArticleByID, id)
-	var i Article
+	var i GetArticleByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.Title,
@@ -88,6 +117,7 @@ func (q *Queries) GetArticleByID(ctx context.Context, id int64) (Article, error)
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.PublishedAt,
+		&i.Images,
 	)
 	return i, err
 }
@@ -108,6 +138,43 @@ func (q *Queries) GetArticleIDByTitleAndOrigin(ctx context.Context, arg GetArtic
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const getArticleImages = `-- name: GetArticleImages :many
+SELECT images.url, article_images.main FROM images
+JOIN (
+    SELECT DISTINCT main, image_id FROM article_images
+    WHERE article_id = $1
+) AS article_images
+ON images.id = article_images.image_id
+`
+
+type GetArticleImagesRow struct {
+	Url  string
+	Main bool
+}
+
+func (q *Queries) GetArticleImages(ctx context.Context, id int64) ([]GetArticleImagesRow, error) {
+	rows, err := q.query(ctx, q.getArticleImagesStmt, getArticleImages, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetArticleImagesRow
+	for rows.Next() {
+		var i GetArticleImagesRow
+		if err := rows.Scan(&i.Url, &i.Main); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const newArticle = `-- name: NewArticle :one

@@ -20,7 +20,22 @@ INSERT INTO article_images (
 SELECT * FROM articles LIMIT @sql_limit OFFSET @sql_offset;
 
 -- name: GetArticleByID :one
-SELECT * FROM articles where id = @id;
+SELECT *, (
+    SELECT
+        array_to_json(array_agg(row_to_json(images))) AS json_array
+    FROM (
+        SELECT images.url, article_images.main
+        FROM images
+        JOIN (
+            SELECT DISTINCT main, image_id
+            FROM article_images
+            WHERE article_id = @id
+        ) AS article_images
+        ON images.id = article_images.image_id
+    ) as images
+) as images
+FROM articles
+WHERE articles.id = @id;
 
 -- name: GetArticleIDByTitleAndOrigin :one
 SELECT id FROM articles
@@ -40,3 +55,11 @@ INSERT INTO images (
 ) VALUES (
     @url
 ) RETURNING id;
+
+-- name: GetArticleImages :many
+SELECT images.url, article_images.main FROM images
+JOIN (
+    SELECT DISTINCT main, image_id FROM article_images
+    WHERE article_id = @id
+) AS article_images
+ON images.id = article_images.image_id;

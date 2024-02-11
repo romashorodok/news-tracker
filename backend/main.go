@@ -3,15 +3,23 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	chi "github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	nats "github.com/nats-io/nats.go"
 	"github.com/romashorodok/news-tracker/backend/internal/storage"
+	"github.com/romashorodok/news-tracker/pkg/dateutils"
+	"github.com/romashorodok/news-tracker/pkg/envutils"
+	"github.com/romashorodok/news-tracker/pkg/httputils"
 	"github.com/romashorodok/news-tracker/pkg/natsinfo"
 	"go.uber.org/fx"
 )
@@ -100,9 +108,11 @@ type NewArticleParams struct {
 }
 
 var (
-	ErrArticleRequireMainImage = errors.New("Article require at least the main image")
+	ErrArticleRequireMainImage = errors.New("article require at least the main image")
 	ErrUnableCreateArticle     = errors.New("unable create the article")
 	ErrUnableCreateImage       = errors.New("unable create the image")
+	ErrArticleNotFound         = errors.New("article not found")
+	ErrUnableGetArticle        = errors.New("unable get article")
 )
 
 func (s *ArticleService) newArticleImage(ctx context.Context, articleID int64, url string, main bool) error {
@@ -122,10 +132,6 @@ func (s *ArticleService) newArticleImage(ctx context.Context, articleID int64, u
 }
 
 func (s *ArticleService) NewArticle(ctx context.Context, params NewArticleParams) (id int64, err error) {
-	if params.MainImageURL == "" {
-		return 0, ErrArticleRequireMainImage
-	}
-
 	err = WithTransaction(s.db, func(queries *storage.Queries) error {
 		articleID, err := s.queries.NewArticle(ctx, params.Article)
 		if err != nil {
@@ -153,6 +159,48 @@ func (s *ArticleService) NewArticle(ctx context.Context, params NewArticleParams
 
 func (s *ArticleService) UpdateArticleStats(ctx context.Context, params storage.UpdateArticleStatsParams) error {
 	return s.queries.UpdateArticleStats(ctx, params)
+}
+
+type ArticleDTO struct {
+	Title         string   `json:"title"`
+	Preface       string   `json:"preface"`
+	Content       string   `json:"content"`
+	ViewersCount  int32    `json:"viewers_count"`
+	PublishedAt   string   `json:"published_at"`
+	MainImage     string   `json:"main_image"`
+	ContentImages []string `json:"content_images,omitempty"`
+}
+
+type dbArticleImageDTO struct {
+	URL  string `json:"url"`
+	Main bool   `json:"main"`
+}
+
+func (s *ArticleService) GetArticleByID(ctx context.Context, id int64) (*ArticleDTO, error) {
+	article, err := s.queries.GetArticleByID(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrArticleNotFound
+	}
+	var articleImages []dbArticleImageDTO
+	if err = json.Unmarshal(article.Images, &articleImages); err != nil {
+		return nil, ErrUnableGetArticle
+	}
+
+	dto := ArticleDTO{
+		Title:        article.Title,
+		Preface:      article.Preface,
+		Content:      article.Content,
+		ViewersCount: article.ViewersCount,
+		PublishedAt:  dateutils.Pretify(article.PublishedAt),
+	}
+	for _, articleImage := range articleImages {
+		if articleImage.Main {
+			dto.MainImage = articleImage.URL
+			continue
+		}
+		dto.ContentImages = append(dto.ContentImages, articleImage.URL)
+	}
+	return &dto, err
 }
 
 type NewArticleServiceParams struct {
@@ -218,7 +266,7 @@ func (a *articleConsumerWorker) handler(ctx context.Context) func(msg *nats.Msg)
 		}
 		log.Printf("update the %+v", article)
 
-		// msg.Ack(opts ...nats.AckOpt)
+		// _ = msg.Ack(opts ...nats.AckOpt)
 	}
 }
 
@@ -244,20 +292,131 @@ func (a *articleConsumerWorker) start(ctx context.Context) {
 	<-ctx.Done()
 }
 
-type NewArticleConsumerWorkerParams struct {
+type StartArticleConsumerWorkerParams struct {
 	fx.In
 
 	JS             nats.JetStreamContext
 	ArticleService *ArticleService
 }
 
-func StartArticleConsumerWorker(params NewArticleConsumerWorkerParams) {
+func StartArticleConsumerWorker(params StartArticleConsumerWorkerParams) {
 	worker := &articleConsumerWorker{
 		js:             params.JS,
 		articleService: params.ArticleService,
 	}
-	worker.start(context.Background())
+	go worker.start(context.Background())
 }
+
+type HttpServerConfig struct {
+	Port string
+	Host string
+}
+
+func (h *HttpServerConfig) GetAddr() string {
+	return net.JoinHostPort(h.Host, h.Port)
+}
+
+func NewHttpServerConfig() *HttpServerConfig {
+	return &HttpServerConfig{
+		Host: envutils.Env("HTTP_HOST", ""),
+		Port: envutils.Env("HTTP_PORT", "8080"),
+	}
+}
+
+type ArticleHandler struct {
+	articleService *ArticleService
+}
+
+func articleErrHandler(w http.ResponseWriter, err error) {
+	switch err {
+	case ErrArticleNotFound:
+		httputils.WriteErrorResponse(w, http.StatusNotFound, err.Error())
+		return
+	default:
+		httputils.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
+	}
+}
+
+func (hand *ArticleHandler) getArticleByID(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.Atoi(chi.URLParam(r, "id"))
+	if err != nil {
+		httputils.WriteErrorResponse(w, http.StatusPreconditionRequired, err.Error())
+		return
+	}
+
+	article, err := hand.articleService.GetArticleByID(r.Context(), int64(id))
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+
+	json.NewEncoder(w).Encode(&article)
+}
+
+func (hand *ArticleHandler) OnRouter(router http.Handler) {
+	switch r := router.(type) {
+	case *chi.Mux:
+		baseURL := "/api/v1"
+		r.Get(baseURL+"/articles/{id}", hand.getArticleByID)
+	}
+}
+
+var _ httputils.Handler = (*ArticleHandler)(nil)
+
+type NewArticleHandlerParams struct {
+	fx.In
+
+	ArticleService *ArticleService
+}
+
+func NewArticleHandler(params NewArticleHandlerParams) *ArticleHandler {
+	return &ArticleHandler{
+		articleService: params.ArticleService,
+	}
+}
+
+type StartHttpServerParams struct {
+	fx.In
+
+	Lifecycle fx.Lifecycle
+	Config    *HttpServerConfig
+	Handlers  []httputils.Handler `group:"http.handler"`
+}
+
+func StartHttpServer(params StartHttpServerParams) {
+	router := chi.NewMux()
+
+	server := &http.Server{
+		Addr:    params.Config.GetAddr(),
+		Handler: router,
+	}
+
+	router.Use(func(handler http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Add("Content-Type", "application/json")
+
+			handler.ServeHTTP(w, r)
+		})
+	})
+
+	for _, handler := range params.Handlers {
+		handler.OnRouter(router)
+	}
+
+	li, err := net.Listen("tcp", server.Addr)
+	if err != nil {
+		log.Panicf("Unable start http server. Err:%s", err)
+		os.Exit(1)
+	}
+
+	params.Lifecycle.Append(fx.StopHook(func(ctx context.Context) error {
+		return server.Shutdown(ctx)
+	}))
+
+	go server.Serve(li)
+}
+
+const groupHandler = `group:"http.handler"`
 
 func main() {
 	fx.New(
@@ -269,7 +428,11 @@ func main() {
 			NewDatabaseConnection,
 
 			NewArticleSerivce,
+			NewHttpServerConfig,
+
+			httputils.AsHandler(groupHandler, NewArticleHandler),
 		),
-		fx.Invoke(StartArticleConsumerWorker),
+		// fx.Invoke(StartArticleConsumerWorker),
+		fx.Invoke(StartHttpServer),
 	).Run()
 }
