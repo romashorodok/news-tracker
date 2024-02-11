@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"time"
 
 	_ "github.com/lib/pq"
 	nats "github.com/nats-io/nats.go"
@@ -39,7 +41,7 @@ func NewDatabaseConfig() *DatabaseConfig {
 		Driver:   "postgres",
 		Username: "admin",
 		Password: "admin",
-		Host:     "localhost",
+		Host:     "postgres",
 		Port:     "5432",
 		Database: "postgres",
 	}
@@ -82,50 +84,192 @@ func NewDatabaseConnection(params NewDatabaseConnectionParams) (*sql.DB, error) 
 	return conn, nil
 }
 
+type ArticleService struct {
+	db      *sql.DB
+	queries *storage.Queries
+}
+
+func (s *ArticleService) GetArticleIDByTitleAndOrigin(ctx context.Context, params storage.GetArticleIDByTitleAndOriginParams) (int64, error) {
+	return s.queries.GetArticleIDByTitleAndOrigin(ctx, params)
+}
+
+type NewArticleParams struct {
+	Article           storage.NewArticleParams
+	MainImageURL      string
+	ContentImagesURLs []string
+}
+
+var (
+	ErrArticleRequireMainImage = errors.New("Article require at least the main image")
+	ErrUnableCreateArticle     = errors.New("unable create the article")
+	ErrUnableCreateImage       = errors.New("unable create the image")
+)
+
+func (s *ArticleService) newArticleImage(ctx context.Context, articleID int64, url string, main bool) error {
+	imageID, err := s.queries.NewImage(ctx, url)
+	if err != nil {
+		return ErrUnableCreateImage
+	}
+
+	if err = s.queries.AttachArticleImage(ctx, storage.AttachArticleImageParams{
+		ArticleID: articleID,
+		ImageID:   imageID,
+		Main:      main,
+	}); err != nil {
+		return ErrUnableCreateImage
+	}
+	return nil
+}
+
+func (s *ArticleService) NewArticle(ctx context.Context, params NewArticleParams) (id int64, err error) {
+	if params.MainImageURL == "" {
+		return 0, ErrArticleRequireMainImage
+	}
+
+	err = WithTransaction(s.db, func(queries *storage.Queries) error {
+		articleID, err := s.queries.NewArticle(ctx, params.Article)
+		if err != nil {
+			log.Printf("unable create the article. Err:%s", err)
+			return ErrUnableCreateArticle
+		}
+
+		if err = s.newArticleImage(ctx, articleID, params.MainImageURL, true); err != nil {
+			log.Printf("unable create the article image. Err:%s", err)
+			return err
+		}
+
+		for _, imageURL := range params.ContentImagesURLs {
+			if err = s.newArticleImage(ctx, articleID, imageURL, false); err != nil {
+				log.Printf("unable create the article image. Err:%s", err)
+				return err
+			}
+		}
+
+		id = articleID
+		return nil
+	})
+	return id, err
+}
+
+func (s *ArticleService) UpdateArticleStats(ctx context.Context, params storage.UpdateArticleStatsParams) error {
+	return s.queries.UpdateArticleStats(ctx, params)
+}
+
+type NewArticleServiceParams struct {
+	fx.In
+
+	DB *sql.DB
+}
+
+func NewArticleSerivce(params NewArticleServiceParams) *ArticleService {
+	return &ArticleService{
+		db:      params.DB,
+		queries: storage.New(params.DB),
+	}
+}
+
+type articleConsumerWorker struct {
+	js             nats.JetStreamContext
+	articleService *ArticleService
+}
+
+func (a *articleConsumerWorker) handler(ctx context.Context) func(msg *nats.Msg) {
+	return func(msg *nats.Msg) {
+		var article natsinfo.Article
+
+		if err := article.Unmarshal(msg.Data); err != nil {
+			log.Println("Unable deserialize %s article payload. Err:%s", msg.Subject, err)
+			_ = msg.Ack()
+		}
+
+		articleID, err := a.articleService.GetArticleIDByTitleAndOrigin(ctx, storage.GetArticleIDByTitleAndOriginParams{
+			Title:  article.Title,
+			Origin: article.Origin,
+		})
+		if errors.Is(err, sql.ErrNoRows) {
+			if _, err := a.articleService.NewArticle(ctx, NewArticleParams{
+				Article: storage.NewArticleParams{
+					Title:        article.Title,
+					Preface:      article.Preface,
+					Content:      article.Content,
+					Origin:       article.Origin,
+					ViewersCount: int32(article.ViewersCount),
+					PublishedAt:  article.PublishedAt,
+				},
+				MainImageURL:      article.MainImage,
+				ContentImagesURLs: article.ContentImages,
+			}); err == nil {
+				log.Printf("create the %+v", article)
+				// _ = msg.Ack(opts ...nats.AckOpt)
+				return
+			}
+		} else if err != nil {
+			log.Printf("Unexpected database error for Title:%s Origin:%s. Err:%s", article.Title, article.Origin, err)
+			return
+		}
+
+		if err = a.articleService.UpdateArticleStats(ctx, storage.UpdateArticleStatsParams{
+			ViewersCount: int32(article.ViewersCount),
+			UpdatedAt:    time.Now(),
+			ID:           articleID,
+		}); err != nil {
+			log.Printf("Unable update article for Title:%s Origin:%s. Err:%s", article.Title, article.Origin, err)
+			return
+		}
+		log.Printf("update the %+v", article)
+
+		// msg.Ack(opts ...nats.AckOpt)
+	}
+}
+
+func (a *articleConsumerWorker) start(ctx context.Context) {
+	if _, err := natsinfo.CreateOrUpdateStream(a.js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
+		log.Panicf("unable set-up nats %s stream. Err:%s", natsinfo.ARTICLES_STREAM_CONFIG.Name, err)
+		os.Exit(1)
+	}
+
+	queueGroup := "backend-articles-consumer"
+	stream, subject, subOpts, config := natsinfo.ArticlesStream_NewArticleConsumerConfig(queueGroup)
+
+	if _, err := natsinfo.CreateOrUpdateConsumer(a.js, stream, config); err != nil {
+		log.Panicf("unable set-up nats %s consumer. Err:%s", queueGroup, err)
+		os.Exit(1)
+	}
+
+	if _, err := a.js.QueueSubscribe(subject, queueGroup, a.handler(ctx), subOpts...); err != nil {
+		log.Panicf("unable start nats %s consumer. Err:%s", queueGroup, err)
+		os.Exit(1)
+	}
+
+	<-ctx.Done()
+}
+
+type NewArticleConsumerWorkerParams struct {
+	fx.In
+
+	JS             nats.JetStreamContext
+	ArticleService *ArticleService
+}
+
+func StartArticleConsumerWorker(params NewArticleConsumerWorkerParams) {
+	worker := &articleConsumerWorker{
+		js:             params.JS,
+		articleService: params.ArticleService,
+	}
+	worker.start(context.Background())
+}
+
 func main() {
-	<-fx.New(
+	fx.New(
 		fx.Provide(
 			natsinfo.NewNatsConfig,
 			natsinfo.NewNatsConnection,
 
 			NewDatabaseConfig,
 			NewDatabaseConnection,
+
+			NewArticleSerivce,
 		),
-
-		fx.Invoke(func(conn *sql.DB, js nats.JetStreamContext) {
-			queueGroup := "backend-articles-consumer"
-
-			if _, err := natsinfo.CreateOrUpdateStream(js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
-				log.Panicf("unable set-up nats %s stream. Err:%s", natsinfo.ARTICLES_STREAM_CONFIG.Name, err)
-				os.Exit(1)
-			}
-
-			stream, subject, subOpts, config := natsinfo.ArticlesStream_NewArticleConsumerConfig(queueGroup)
-
-			if _, err := natsinfo.CreateOrUpdateConsumer(js, stream, config); err != nil {
-				log.Panicf("unable set-up nats %s consumer. Err:%s", queueGroup, err)
-				os.Exit(1)
-			}
-
-			sub, err := js.QueueSubscribe(subject, queueGroup, func(msg *nats.Msg) {
-				var article natsinfo.Article
-				article.Unmarshal(msg.Data)
-				log.Printf("%+v", article)
-			}, subOpts...)
-
-			log.Println(sub, err)
-
-			<-context.Background().Done()
-
-			// conn, _ := NewDatabaseConnection(NewDatabaseConnectionParams{
-			// 	Config: databaseConfig,
-			// })
-			// defer conn.Close()
-
-			// store := storage.New(conn)
-			//
-			// _, err := store.GetArticleByID(context.Background(), 0)
-			// log.Println(errors.Is(err, sql.ErrNoRows))
-		}),
-	).Wait()
+		fx.Invoke(StartArticleConsumerWorker),
+	).Run()
 }

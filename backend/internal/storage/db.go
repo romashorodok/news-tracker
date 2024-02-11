@@ -27,14 +27,23 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.articlesStmt, err = db.PrepareContext(ctx, articles); err != nil {
 		return nil, fmt.Errorf("error preparing query Articles: %w", err)
 	}
+	if q.attachArticleImageStmt, err = db.PrepareContext(ctx, attachArticleImage); err != nil {
+		return nil, fmt.Errorf("error preparing query AttachArticleImage: %w", err)
+	}
 	if q.getArticleByIDStmt, err = db.PrepareContext(ctx, getArticleByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetArticleByID: %w", err)
+	}
+	if q.getArticleIDByTitleAndOriginStmt, err = db.PrepareContext(ctx, getArticleIDByTitleAndOrigin); err != nil {
+		return nil, fmt.Errorf("error preparing query GetArticleIDByTitleAndOrigin: %w", err)
 	}
 	if q.newArticleStmt, err = db.PrepareContext(ctx, newArticle); err != nil {
 		return nil, fmt.Errorf("error preparing query NewArticle: %w", err)
 	}
-	if q.newArticleImageStmt, err = db.PrepareContext(ctx, newArticleImage); err != nil {
-		return nil, fmt.Errorf("error preparing query NewArticleImage: %w", err)
+	if q.newImageStmt, err = db.PrepareContext(ctx, newImage); err != nil {
+		return nil, fmt.Errorf("error preparing query NewImage: %w", err)
+	}
+	if q.updateArticleStatsStmt, err = db.PrepareContext(ctx, updateArticleStats); err != nil {
+		return nil, fmt.Errorf("error preparing query UpdateArticleStats: %w", err)
 	}
 	return &q, nil
 }
@@ -46,9 +55,19 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing articlesStmt: %w", cerr)
 		}
 	}
+	if q.attachArticleImageStmt != nil {
+		if cerr := q.attachArticleImageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing attachArticleImageStmt: %w", cerr)
+		}
+	}
 	if q.getArticleByIDStmt != nil {
 		if cerr := q.getArticleByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getArticleByIDStmt: %w", cerr)
+		}
+	}
+	if q.getArticleIDByTitleAndOriginStmt != nil {
+		if cerr := q.getArticleIDByTitleAndOriginStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getArticleIDByTitleAndOriginStmt: %w", cerr)
 		}
 	}
 	if q.newArticleStmt != nil {
@@ -56,9 +75,14 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing newArticleStmt: %w", cerr)
 		}
 	}
-	if q.newArticleImageStmt != nil {
-		if cerr := q.newArticleImageStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing newArticleImageStmt: %w", cerr)
+	if q.newImageStmt != nil {
+		if cerr := q.newImageStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing newImageStmt: %w", cerr)
+		}
+	}
+	if q.updateArticleStatsStmt != nil {
+		if cerr := q.updateArticleStatsStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing updateArticleStatsStmt: %w", cerr)
 		}
 	}
 	return err
@@ -98,21 +122,27 @@ func (q *Queries) queryRow(ctx context.Context, stmt *sql.Stmt, query string, ar
 }
 
 type Queries struct {
-	db                  DBTX
-	tx                  *sql.Tx
-	articlesStmt        *sql.Stmt
-	getArticleByIDStmt  *sql.Stmt
-	newArticleStmt      *sql.Stmt
-	newArticleImageStmt *sql.Stmt
+	db                               DBTX
+	tx                               *sql.Tx
+	articlesStmt                     *sql.Stmt
+	attachArticleImageStmt           *sql.Stmt
+	getArticleByIDStmt               *sql.Stmt
+	getArticleIDByTitleAndOriginStmt *sql.Stmt
+	newArticleStmt                   *sql.Stmt
+	newImageStmt                     *sql.Stmt
+	updateArticleStatsStmt           *sql.Stmt
 }
 
 func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 	return &Queries{
-		db:                  tx,
-		tx:                  tx,
-		articlesStmt:        q.articlesStmt,
-		getArticleByIDStmt:  q.getArticleByIDStmt,
-		newArticleStmt:      q.newArticleStmt,
-		newArticleImageStmt: q.newArticleImageStmt,
+		db:                               tx,
+		tx:                               tx,
+		articlesStmt:                     q.articlesStmt,
+		attachArticleImageStmt:           q.attachArticleImageStmt,
+		getArticleByIDStmt:               q.getArticleByIDStmt,
+		getArticleIDByTitleAndOriginStmt: q.getArticleIDByTitleAndOriginStmt,
+		newArticleStmt:                   q.newArticleStmt,
+		newImageStmt:                     q.newImageStmt,
+		updateArticleStatsStmt:           q.updateArticleStatsStmt,
 	}
 }

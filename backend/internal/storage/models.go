@@ -21,7 +21,12 @@ type Article struct {
 }
 
 type ArticleImage struct {
-	ID        int64
 	ArticleID int64
-	Url       string
+	ImageID   int64
+	Main      bool
+}
+
+type Image struct {
+	ID  int64
+	Url string
 }

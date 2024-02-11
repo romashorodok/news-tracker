@@ -52,6 +52,25 @@ func (q *Queries) Articles(ctx context.Context, arg ArticlesParams) ([]Article, 
 	return items, nil
 }
 
+const attachArticleImage = `-- name: AttachArticleImage :exec
+INSERT INTO article_images (
+    article_id, image_id, main
+) VALUES (
+    $1, $2, $3
+)
+`
+
+type AttachArticleImageParams struct {
+	ArticleID int64
+	ImageID   int64
+	Main      bool
+}
+
+func (q *Queries) AttachArticleImage(ctx context.Context, arg AttachArticleImageParams) error {
+	_, err := q.exec(ctx, q.attachArticleImageStmt, attachArticleImage, arg.ArticleID, arg.ImageID, arg.Main)
+	return err
+}
+
 const getArticleByID = `-- name: GetArticleByID :one
 SELECT id, title, preface, content, origin, viewers_count, created_at, updated_at, published_at FROM articles where id = $1
 `
@@ -71,6 +90,24 @@ func (q *Queries) GetArticleByID(ctx context.Context, id int64) (Article, error)
 		&i.PublishedAt,
 	)
 	return i, err
+}
+
+const getArticleIDByTitleAndOrigin = `-- name: GetArticleIDByTitleAndOrigin :one
+SELECT id FROM articles
+WHERE ($1::text = '' OR title ILIKE '%' || $1 || '%')
+AND origin = $2
+`
+
+type GetArticleIDByTitleAndOriginParams struct {
+	Title  string
+	Origin string
+}
+
+func (q *Queries) GetArticleIDByTitleAndOrigin(ctx context.Context, arg GetArticleIDByTitleAndOriginParams) (int64, error) {
+	row := q.queryRow(ctx, q.getArticleIDByTitleAndOriginStmt, getArticleIDByTitleAndOrigin, arg.Title, arg.Origin)
+	var id int64
+	err := row.Scan(&id)
+	return id, err
 }
 
 const newArticle = `-- name: NewArticle :one
@@ -108,22 +145,36 @@ func (q *Queries) NewArticle(ctx context.Context, arg NewArticleParams) (int64, 
 	return id, err
 }
 
-const newArticleImage = `-- name: NewArticleImage :one
-INSERT INTO article_images (
-    article_id, url
+const newImage = `-- name: NewImage :one
+INSERT INTO images (
+    url
 ) VALUES (
-    $1, $2
+    $1
 ) RETURNING id
 `
 
-type NewArticleImageParams struct {
-	ArticleID int64
-	Url       string
-}
-
-func (q *Queries) NewArticleImage(ctx context.Context, arg NewArticleImageParams) (int64, error) {
-	row := q.queryRow(ctx, q.newArticleImageStmt, newArticleImage, arg.ArticleID, arg.Url)
+func (q *Queries) NewImage(ctx context.Context, url string) (int64, error) {
+	row := q.queryRow(ctx, q.newImageStmt, newImage, url)
 	var id int64
 	err := row.Scan(&id)
 	return id, err
+}
+
+const updateArticleStats = `-- name: UpdateArticleStats :exec
+UPDATE articles
+SET
+viewers_count = $1,
+updated_at = $2
+WHERE id = $3
+`
+
+type UpdateArticleStatsParams struct {
+	ViewersCount int32
+	UpdatedAt    time.Time
+	ID           int64
+}
+
+func (q *Queries) UpdateArticleStats(ctx context.Context, arg UpdateArticleStatsParams) error {
+	_, err := q.exec(ctx, q.updateArticleStatsStmt, updateArticleStats, arg.ViewersCount, arg.UpdatedAt, arg.ID)
+	return err
 }
