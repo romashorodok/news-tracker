@@ -162,6 +162,7 @@ func (s *ArticleService) UpdateArticleStats(ctx context.Context, params storage.
 }
 
 type ArticleDTO struct {
+	ID            int64    `json:"id"`
 	Title         string   `json:"title"`
 	Preface       string   `json:"preface"`
 	Content       string   `json:"content"`
@@ -169,6 +170,71 @@ type ArticleDTO struct {
 	PublishedAt   string   `json:"published_at"`
 	MainImage     string   `json:"main_image"`
 	ContentImages []string `json:"content_images,omitempty"`
+}
+
+type ArticleSorting string
+
+var (
+	ARTICLE_SORTING_NEWEST ArticleSorting = "newest"
+	ARTICLE_SORTING_OLDEST ArticleSorting = "oldest"
+)
+
+type GetArticlesParams struct {
+	Sorting   ArticleSorting
+	StartDate time.Time
+	EndDate   time.Time
+}
+
+var DEFAULT_START_DATE = time.Now().AddDate(-10, 0, 0)
+
+var NULL_TIME = time.Time{}
+
+func GetSqlTime(u time.Time) sql.NullTime {
+	if NULL_TIME.Equal(u) {
+		return sql.NullTime{Valid: false}
+	}
+	return sql.NullTime{Time: u, Valid: true}
+}
+
+func (s *ArticleService) GetArticles(ctx context.Context, params GetArticlesParams) ([]ArticleDTO, error) {
+	articles, err := s.queries.ArticlesWithImages(ctx, storage.ArticlesWithImagesParams{
+		StartDate:        GetSqlTime(params.StartDate),
+		StartDateDefault: DEFAULT_START_DATE,
+		EndDate:          GetSqlTime(params.EndDate),
+		ArticleSorting:   string(params.Sorting),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrArticleNotFound
+	}
+
+	var dtos []ArticleDTO
+
+	for _, article := range articles {
+		var articleImages []dbArticleImageDTO
+		if err = json.Unmarshal(article.Images, &articleImages); err != nil {
+			return nil, ErrUnableGetArticle
+		}
+
+		dto := ArticleDTO{
+			ID:           article.ID,
+			Title:        article.Title,
+			Preface:      article.Preface,
+			Content:      article.Content,
+			ViewersCount: article.ViewersCount,
+			PublishedAt:  dateutils.Pretify(article.PublishedAt),
+		}
+
+		for _, articleImage := range articleImages {
+			if articleImage.Main {
+				dto.MainImage = articleImage.URL
+				continue
+			}
+			dto.ContentImages = append(dto.ContentImages, articleImage.URL)
+		}
+
+		dtos = append(dtos, dto)
+	}
+	return dtos, nil
 }
 
 type dbArticleImageDTO struct {
@@ -187,6 +253,7 @@ func (s *ArticleService) GetArticleByID(ctx context.Context, id int64) (*Article
 	}
 
 	dto := ArticleDTO{
+		ID:           article.ID,
 		Title:        article.Title,
 		Preface:      article.Preface,
 		Content:      article.Content,
@@ -327,11 +394,79 @@ type ArticleHandler struct {
 	articleService *ArticleService
 }
 
+var (
+	SORTING_QUERY_PARAM_NAME    = "sort"
+	START_DATE_QUERY_PARAM_NAME = "start_date"
+	END_DATE_QUERY_PARAM_NAME   = "end_date"
+)
+
+var ErrUnsupportedQueryParam = errors.New("")
+
+func getDateQuery(r *http.Request, queryName string) (time.Time, error) {
+	date := r.URL.Query().Get(queryName)
+	if date == "" {
+		return time.Time{}, nil
+	}
+	t, err := dateutils.ParseQueryString(date)
+	if err != nil {
+		return time.Time{}, errors.Join(fmt.Errorf("unsupported `%s` query value %s. Format must be like `2024-10-12T10:01`, `2024-10-12`, `YYYY-MM-DD` ", SORTING_QUERY_PARAM_NAME, r.URL.Query().Get(SORTING_QUERY_PARAM_NAME)), ErrUnsupportedQueryParam)
+	}
+	return t, nil
+}
+
+func getArticleSortingQuery(r *http.Request, defaultVal ArticleSorting) (ArticleSorting, error) {
+	switch ArticleSorting(r.URL.Query().Get(SORTING_QUERY_PARAM_NAME)) {
+	case ARTICLE_SORTING_NEWEST:
+		return ARTICLE_SORTING_NEWEST, nil
+	case ARTICLE_SORTING_OLDEST:
+		return ARTICLE_SORTING_OLDEST, nil
+	case "":
+		return defaultVal, nil
+	default:
+		return "", errors.Join(fmt.Errorf("unsupported `%s` query value %s", SORTING_QUERY_PARAM_NAME, r.URL.Query().Get(SORTING_QUERY_PARAM_NAME)), ErrUnsupportedQueryParam)
+	}
+}
+
+func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) {
+	sorting, err := getArticleSortingQuery(r, ARTICLE_SORTING_NEWEST)
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+
+	startDate, err := getDateQuery(r, START_DATE_QUERY_PARAM_NAME)
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+	log.Println(startDate)
+
+	endDate, err := getDateQuery(r, END_DATE_QUERY_PARAM_NAME)
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+	log.Println(endDate)
+
+	articles, err := hand.articleService.GetArticles(r.Context(), GetArticlesParams{
+		Sorting:   sorting,
+		StartDate: startDate,
+		EndDate:   endDate,
+	})
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+	json.NewEncoder(w).Encode(&articles)
+}
+
 func articleErrHandler(w http.ResponseWriter, err error) {
 	switch err {
 	case ErrArticleNotFound:
 		httputils.WriteErrorResponse(w, http.StatusNotFound, err.Error())
 		return
+	case ErrUnsupportedQueryParam:
+		httputils.WriteErrorResponse(w, http.StatusNotAcceptable, err.Error())
 	default:
 		httputils.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
 	}
@@ -357,6 +492,7 @@ func (hand *ArticleHandler) OnRouter(router http.Handler) {
 	switch r := router.(type) {
 	case *chi.Mux:
 		baseURL := "/api/v1"
+		r.Get(baseURL+"/articles", hand.getArticles)
 		r.Get(baseURL+"/articles/{id}", hand.getArticleByID)
 	}
 }

@@ -27,6 +27,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.articlesStmt, err = db.PrepareContext(ctx, articles); err != nil {
 		return nil, fmt.Errorf("error preparing query Articles: %w", err)
 	}
+	if q.articlesWithImagesStmt, err = db.PrepareContext(ctx, articlesWithImages); err != nil {
+		return nil, fmt.Errorf("error preparing query ArticlesWithImages: %w", err)
+	}
 	if q.attachArticleImageStmt, err = db.PrepareContext(ctx, attachArticleImage); err != nil {
 		return nil, fmt.Errorf("error preparing query AttachArticleImage: %w", err)
 	}
@@ -56,6 +59,11 @@ func (q *Queries) Close() error {
 	if q.articlesStmt != nil {
 		if cerr := q.articlesStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing articlesStmt: %w", cerr)
+		}
+	}
+	if q.articlesWithImagesStmt != nil {
+		if cerr := q.articlesWithImagesStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing articlesWithImagesStmt: %w", cerr)
 		}
 	}
 	if q.attachArticleImageStmt != nil {
@@ -133,6 +141,7 @@ type Queries struct {
 	db                               DBTX
 	tx                               *sql.Tx
 	articlesStmt                     *sql.Stmt
+	articlesWithImagesStmt           *sql.Stmt
 	attachArticleImageStmt           *sql.Stmt
 	getArticleByIDStmt               *sql.Stmt
 	getArticleIDByTitleAndOriginStmt *sql.Stmt
@@ -147,6 +156,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                               tx,
 		tx:                               tx,
 		articlesStmt:                     q.articlesStmt,
+		articlesWithImagesStmt:           q.articlesWithImagesStmt,
 		attachArticleImageStmt:           q.attachArticleImageStmt,
 		getArticleByIDStmt:               q.getArticleByIDStmt,
 		getArticleIDByTitleAndOriginStmt: q.getArticleIDByTitleAndOriginStmt,

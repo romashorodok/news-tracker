@@ -36,6 +36,8 @@ services:
       target: backend
     networks:
         - bridge
+    ports:
+      - "8080:8080"
     develop:
       watch:
         - action: rebuild
@@ -45,20 +47,20 @@ services:
           path: ./pkg
           target: /app/pkg
 
-  worker:
-    build:
-      target: worker
-    command:
-      - "-template"
-      - ${CONFIG}
-    networks:
-        - bridge
-    develop:
-      watch:
-        - action: rebuild
-          path: ./worker
-          target: /app/worker
-        - action: rebuild
-          path: ./pkg
-          target: /app/pkg
-
+  # worker:
+  #   build:
+  #     target: worker
+  #   command:
+  #     - "-template"
+  #     - ${CONFIG}
+  #   networks:
+  #       - bridge
+  #   develop:
+  #     watch:
+  #       - action: rebuild
+  #         path: ./worker
+  #         target: /app/worker
+  #       - action: rebuild
+  #         path: ./pkg
+  #         target: /app/pkg
+  #

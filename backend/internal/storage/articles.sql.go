@@ -7,6 +7,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -39,6 +40,92 @@ func (q *Queries) Articles(ctx context.Context, arg ArticlesParams) ([]Article, 
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.PublishedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const articlesWithImages = `-- name: ArticlesWithImages :many
+SELECT
+    articles.id, articles.title, articles.preface, articles.content, articles.origin, articles.viewers_count, articles.created_at, articles.updated_at, articles.published_at,
+    array_to_json(array_agg(row_to_json(images))) AS images
+FROM articles
+LEFT JOIN (
+    SELECT DISTINCT ON (ai.image_id)
+        ai.image_id,
+        ai.main,
+        i.url,
+        ai.article_id
+    FROM article_images ai
+    JOIN images i ON ai.image_id = i.id
+) AS images ON articles.id = images.article_id
+WHERE
+(
+    articles.published_at >= 
+        COALESCE($1, $2)::timestamp
+    AND
+    articles.published_at <= COALESCE($3, NOW())::timestamp
+)
+GROUP BY articles.id
+ORDER BY 
+    CASE WHEN $4::text = 'newest' THEN articles.published_at END DESC,
+    CASE WHEN $4::text = 'oldest' THEN articles.published_at END ASC
+`
+
+type ArticlesWithImagesParams struct {
+	StartDate        sql.NullTime
+	StartDateDefault time.Time
+	EndDate          sql.NullTime
+	ArticleSorting   string
+}
+
+type ArticlesWithImagesRow struct {
+	ID           int64
+	Title        string
+	Preface      string
+	Content      string
+	Origin       string
+	ViewersCount int32
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
+	PublishedAt  time.Time
+	Images       json.RawMessage
+}
+
+func (q *Queries) ArticlesWithImages(ctx context.Context, arg ArticlesWithImagesParams) ([]ArticlesWithImagesRow, error) {
+	rows, err := q.query(ctx, q.articlesWithImagesStmt, articlesWithImages,
+		arg.StartDate,
+		arg.StartDateDefault,
+		arg.EndDate,
+		arg.ArticleSorting,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ArticlesWithImagesRow
+	for rows.Next() {
+		var i ArticlesWithImagesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Preface,
+			&i.Content,
+			&i.Origin,
+			&i.ViewersCount,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.PublishedAt,
+			&i.Images,
 		); err != nil {
 			return nil, err
 		}
@@ -198,6 +285,8 @@ type NewArticleParams struct {
 }
 
 // https://docs.sqlc.dev/en/stable/reference/query-annotations.html
+// https://github.com/sqlc-dev/sqlc/issues/1062#issuecomment-869770485
+// https://docs.sqlc.dev/en/stable/howto/named_parameters.html#nullable-parameters
 func (q *Queries) NewArticle(ctx context.Context, arg NewArticleParams) (int64, error) {
 	row := q.queryRow(ctx, q.newArticleStmt, newArticle,
 		arg.Title,

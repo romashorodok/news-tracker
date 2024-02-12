@@ -1,4 +1,6 @@
 -- https://docs.sqlc.dev/en/stable/reference/query-annotations.html
+-- https://github.com/sqlc-dev/sqlc/issues/1062#issuecomment-869770485
+-- https://docs.sqlc.dev/en/stable/howto/named_parameters.html#nullable-parameters
 
 -- name: NewArticle :one
 INSERT INTO articles (
@@ -18,6 +20,32 @@ INSERT INTO article_images (
 
 -- name: Articles :many
 SELECT * FROM articles LIMIT @sql_limit OFFSET @sql_offset;
+
+-- name: ArticlesWithImages :many
+SELECT
+    articles.*,
+    array_to_json(array_agg(row_to_json(images))) AS images
+FROM articles
+LEFT JOIN (
+    SELECT DISTINCT ON (ai.image_id)
+        ai.image_id,
+        ai.main,
+        i.url,
+        ai.article_id
+    FROM article_images ai
+    JOIN images i ON ai.image_id = i.id
+) AS images ON articles.id = images.article_id
+WHERE
+(
+    articles.published_at >=
+        COALESCE(sqlc.narg('start_date'), @start_date_default)::timestamp
+    AND
+    articles.published_at <= COALESCE(sqlc.narg('end_date'), NOW())::timestamp
+)
+GROUP BY articles.id
+ORDER BY
+    CASE WHEN @article_sorting::text = 'newest' THEN articles.published_at END DESC,
+    CASE WHEN @article_sorting::text = 'oldest' THEN articles.published_at END ASC;
 
 -- name: GetArticleByID :one
 SELECT *, (
