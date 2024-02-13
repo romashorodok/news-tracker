@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	chi "github.com/go-chi/chi/v5"
@@ -112,6 +113,7 @@ var (
 	ErrUnableCreateArticle     = errors.New("unable create the article")
 	ErrUnableCreateImage       = errors.New("unable create the image")
 	ErrArticleNotFound         = errors.New("article not found")
+	ErrArticlesNotFound        = errors.New("articles not found")
 	ErrUnableGetArticle        = errors.New("unable get article")
 )
 
@@ -180,16 +182,17 @@ var (
 )
 
 type GetArticlesParams struct {
-	Sorting   ArticleSorting
-	StartDate time.Time
-	EndDate   time.Time
+	Sorting    ArticleSorting
+	StartDate  time.Time
+	EndDate    time.Time
+	TextLexems []string
 }
 
 var DEFAULT_START_DATE = time.Now().AddDate(-10, 0, 0)
 
 var NULL_TIME = time.Time{}
 
-func GetSqlTime(u time.Time) sql.NullTime {
+func GetNullableSqlTime(u time.Time) sql.NullTime {
 	if NULL_TIME.Equal(u) {
 		return sql.NullTime{Valid: false}
 	}
@@ -198,13 +201,18 @@ func GetSqlTime(u time.Time) sql.NullTime {
 
 func (s *ArticleService) GetArticles(ctx context.Context, params GetArticlesParams) ([]ArticleDTO, error) {
 	articles, err := s.queries.ArticlesWithImages(ctx, storage.ArticlesWithImagesParams{
-		StartDate:        GetSqlTime(params.StartDate),
+		StartDate:        GetNullableSqlTime(params.StartDate),
 		StartDateDefault: DEFAULT_START_DATE,
-		EndDate:          GetSqlTime(params.EndDate),
+		EndDate:          GetNullableSqlTime(params.EndDate),
 		ArticleSorting:   string(params.Sorting),
+		Lexems:           params.TextLexems,
 	})
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrArticleNotFound
+		return nil, ErrArticlesNotFound
+	}
+
+	if len(articles) == 0 {
+		return nil, ErrArticlesNotFound
 	}
 
 	var dtos []ArticleDTO
@@ -398,6 +406,7 @@ var (
 	SORTING_QUERY_PARAM_NAME    = "sort"
 	START_DATE_QUERY_PARAM_NAME = "start_date"
 	END_DATE_QUERY_PARAM_NAME   = "end_date"
+	TEXT_QUERY_PARAM_NAME       = "text"
 )
 
 var ErrUnsupportedQueryParam = errors.New("")
@@ -427,6 +436,10 @@ func getArticleSortingQuery(r *http.Request, defaultVal ArticleSorting) (Article
 	}
 }
 
+func getTextQuert(r *http.Request) []string {
+    return strings.Split(r.URL.Query().Get(TEXT_QUERY_PARAM_NAME), " ")
+}
+
 func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) {
 	sorting, err := getArticleSortingQuery(r, ARTICLE_SORTING_NEWEST)
 	if err != nil {
@@ -448,10 +461,17 @@ func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) 
 	}
 	log.Println(endDate)
 
+	textLexems := getTextQuert(r)
+    log.Println(textLexems)
+
+	// search := r.URL.Query().Get(TEXT_QUERY_PARAM_NAME)
+	// log.Println(search)
+
 	articles, err := hand.articleService.GetArticles(r.Context(), GetArticlesParams{
-		Sorting:   sorting,
-		StartDate: startDate,
-		EndDate:   endDate,
+		Sorting:    sorting,
+		StartDate:  startDate,
+		EndDate:    endDate,
+		TextLexems: textLexems,
 	})
 	if err != nil {
 		articleErrHandler(w, err)
@@ -462,6 +482,9 @@ func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) 
 
 func articleErrHandler(w http.ResponseWriter, err error) {
 	switch err {
+	case ErrArticlesNotFound:
+		httputils.WriteErrorResponse(w, http.StatusNotFound, err.Error())
+		return
 	case ErrArticleNotFound:
 		httputils.WriteErrorResponse(w, http.StatusNotFound, err.Error())
 		return

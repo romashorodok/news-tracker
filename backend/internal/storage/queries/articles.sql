@@ -42,6 +42,12 @@ WHERE
     AND
     articles.published_at <= COALESCE(sqlc.narg('end_date'), NOW())::timestamp
 )
+AND
+(
+    CAST(ARRAY_TO_JSON(sqlc.slice('lexems')::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
+    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+    @@ to_tsquery(ARRAY_TO_STRING(sqlc.slice('lexems'), ' & '))
+)
 GROUP BY articles.id
 ORDER BY
     CASE WHEN @article_sorting::text = 'newest' THEN articles.published_at END DESC,

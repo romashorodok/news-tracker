@@ -10,6 +10,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"time"
+
+	"github.com/lib/pq"
 )
 
 const articles = `-- name: Articles :many
@@ -70,21 +72,28 @@ LEFT JOIN (
 ) AS images ON articles.id = images.article_id
 WHERE
 (
-    articles.published_at >= 
+    articles.published_at >=
         COALESCE($1, $2)::timestamp
     AND
     articles.published_at <= COALESCE($3, NOW())::timestamp
 )
+AND
+(
+    CAST(ARRAY_TO_JSON($4::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
+    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+    @@ to_tsquery(ARRAY_TO_STRING($4, ' & '))
+)
 GROUP BY articles.id
-ORDER BY 
-    CASE WHEN $4::text = 'newest' THEN articles.published_at END DESC,
-    CASE WHEN $4::text = 'oldest' THEN articles.published_at END ASC
+ORDER BY
+    CASE WHEN $5::text = 'newest' THEN articles.published_at END DESC,
+    CASE WHEN $5::text = 'oldest' THEN articles.published_at END ASC
 `
 
 type ArticlesWithImagesParams struct {
 	StartDate        sql.NullTime
 	StartDateDefault time.Time
 	EndDate          sql.NullTime
+	Lexems           []string
 	ArticleSorting   string
 }
 
@@ -106,6 +115,7 @@ func (q *Queries) ArticlesWithImages(ctx context.Context, arg ArticlesWithImages
 		arg.StartDate,
 		arg.StartDateDefault,
 		arg.EndDate,
+		pq.Array(arg.Lexems),
 		arg.ArticleSorting,
 	)
 	if err != nil {
