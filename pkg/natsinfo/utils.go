@@ -27,3 +27,13 @@ func CreateOrUpdateConsumer(js nats.JetStreamContext, stream string, config *nat
 
 	return info, err
 }
+
+func CreateOrAttachKeyValue(js nats.JetStreamContext, config *nats.KeyValueConfig) (nats.KeyValue, error) {
+	kv, err := js.KeyValue(config.Bucket)
+	switch err {
+	case nats.ErrBucketNotFound, nats.ErrInvalidBucketName:
+		return js.CreateKeyValue(config)
+	default:
+		return kv, err
+	}
+}

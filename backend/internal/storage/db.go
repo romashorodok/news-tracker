@@ -36,6 +36,9 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.getArticleByIDStmt, err = db.PrepareContext(ctx, getArticleByID); err != nil {
 		return nil, fmt.Errorf("error preparing query GetArticleByID: %w", err)
 	}
+	if q.getArticleCountStmt, err = db.PrepareContext(ctx, getArticleCount); err != nil {
+		return nil, fmt.Errorf("error preparing query GetArticleCount: %w", err)
+	}
 	if q.getArticleIDByTitleAndOriginStmt, err = db.PrepareContext(ctx, getArticleIDByTitleAndOrigin); err != nil {
 		return nil, fmt.Errorf("error preparing query GetArticleIDByTitleAndOrigin: %w", err)
 	}
@@ -74,6 +77,11 @@ func (q *Queries) Close() error {
 	if q.getArticleByIDStmt != nil {
 		if cerr := q.getArticleByIDStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getArticleByIDStmt: %w", cerr)
+		}
+	}
+	if q.getArticleCountStmt != nil {
+		if cerr := q.getArticleCountStmt.Close(); cerr != nil {
+			err = fmt.Errorf("error closing getArticleCountStmt: %w", cerr)
 		}
 	}
 	if q.getArticleIDByTitleAndOriginStmt != nil {
@@ -144,6 +152,7 @@ type Queries struct {
 	articlesWithImagesStmt           *sql.Stmt
 	attachArticleImageStmt           *sql.Stmt
 	getArticleByIDStmt               *sql.Stmt
+	getArticleCountStmt              *sql.Stmt
 	getArticleIDByTitleAndOriginStmt *sql.Stmt
 	getArticleImagesStmt             *sql.Stmt
 	newArticleStmt                   *sql.Stmt
@@ -159,6 +168,7 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		articlesWithImagesStmt:           q.articlesWithImagesStmt,
 		attachArticleImageStmt:           q.attachArticleImageStmt,
 		getArticleByIDStmt:               q.getArticleByIDStmt,
+		getArticleCountStmt:              q.getArticleCountStmt,
 		getArticleIDByTitleAndOriginStmt: q.getArticleIDByTitleAndOriginStmt,
 		getArticleImagesStmt:             q.getArticleImagesStmt,
 		newArticleStmt:                   q.newArticleStmt,

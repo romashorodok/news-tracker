@@ -51,7 +51,9 @@ AND
 GROUP BY articles.id
 ORDER BY
     CASE WHEN @article_sorting::text = 'newest' THEN articles.published_at END DESC,
-    CASE WHEN @article_sorting::text = 'oldest' THEN articles.published_at END ASC;
+    CASE WHEN @article_sorting::text = 'oldest' THEN articles.published_at END ASC
+LIMIT @page_size::bigint
+OFFSET @page::bigint;
 
 -- name: GetArticleByID :one
 SELECT *, (
@@ -97,3 +99,20 @@ JOIN (
     WHERE article_id = @id
 ) AS article_images
 ON images.id = article_images.image_id;
+
+-- name: GetArticleCount :one
+SELECT COUNT(*)
+FROM articles
+WHERE
+(
+    articles.published_at >=
+        COALESCE(sqlc.narg('start_date'), @start_date_default)::timestamp
+    AND
+    articles.published_at <= COALESCE(sqlc.narg('end_date'), NOW())::timestamp
+)
+AND
+(
+    CAST(ARRAY_TO_JSON(sqlc.slice('lexems')::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
+    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+    @@ to_tsquery(ARRAY_TO_STRING(sqlc.slice('lexems'), ' & '))
+);

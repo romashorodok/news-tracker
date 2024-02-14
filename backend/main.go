@@ -2,13 +2,16 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -96,6 +99,7 @@ func NewDatabaseConnection(params NewDatabaseConnectionParams) (*sql.DB, error) 
 type ArticleService struct {
 	db      *sql.DB
 	queries *storage.Queries
+	kv      nats.KeyValue
 }
 
 func (s *ArticleService) GetArticleIDByTitleAndOrigin(ctx context.Context, params storage.GetArticleIDByTitleAndOriginParams) (int64, error) {
@@ -114,6 +118,7 @@ var (
 	ErrUnableCreateImage       = errors.New("unable create the image")
 	ErrArticleNotFound         = errors.New("article not found")
 	ErrArticlesNotFound        = errors.New("articles not found")
+	ErrArticlesCount           = errors.New("unable get articles count")
 	ErrUnableGetArticle        = errors.New("unable get article")
 )
 
@@ -176,9 +181,11 @@ type ArticleDTO struct {
 
 type ArticleSorting string
 
-var (
+const (
 	ARTICLE_SORTING_NEWEST ArticleSorting = "newest"
 	ARTICLE_SORTING_OLDEST ArticleSorting = "oldest"
+	DEFAULT_PAGE           int            = 1
+	DEFAULT_PAGE_SIZE      int            = 7
 )
 
 type GetArticlesParams struct {
@@ -186,6 +193,8 @@ type GetArticlesParams struct {
 	StartDate  time.Time
 	EndDate    time.Time
 	TextLexems []string
+	Page       int
+	PageSize   int
 }
 
 var DEFAULT_START_DATE = time.Now().AddDate(-10, 0, 0)
@@ -199,13 +208,179 @@ func GetNullableSqlTime(u time.Time) sql.NullTime {
 	return sql.NullTime{Time: u, Valid: true}
 }
 
+var ErrInvalidPage = errors.New("invalid page.")
+
+type PaginationView struct {
+	// Current page cursor padding
+	// Example: I have 10 pages. If I'm on 5 page. With WidthCursorPadding = 2.
+	// I will see 3 4 Curr 6 7 pages
+	cursorPadding      int
+	itemsPerPage       int
+	itemsCount         int
+	pageQueryParamName string
+	url                url.URL
+}
+
+type PaginationLink struct {
+	Link        string `json:"link"`
+	PageNumber  string `json:"page_number"`
+	Placeholder bool   `json:"paceholder"`
+}
+
+func (p *PaginationView) TotalPages() int {
+	return int(math.Ceil(float64(p.itemsCount) / float64(p.itemsPerPage)))
+}
+
+func (p *PaginationView) pageLinksRange(start, end int) []PaginationLink {
+	var result []PaginationLink
+	length := end - start
+	for i := 0; i <= length; i++ {
+		result = append(result, p.makeLinkFromUrl(i+start))
+	}
+	return result
+}
+
+func (p *PaginationView) PagesLinks(page int) ([]PaginationLink, error) {
+	totalPages := p.TotalPages()
+
+	if page > totalPages || page < 1 {
+		return nil, errors.Join(ErrInvalidPage, fmt.Errorf("Total pages: %d. Page:%d", totalPages, page))
+	}
+
+	isFirstPage := page+p.cursorPadding-totalPages+1 == page
+
+	if p.cursorPadding >= totalPages || isFirstPage {
+		allLinks := p.pageLinksRange(1, totalPages)
+		return allLinks, nil
+	}
+
+	leftBorder := int(math.Max(float64(page-p.cursorPadding), 1))
+	rightBorder := int(math.Min(float64(page+p.cursorPadding), float64(totalPages)))
+
+	isLeftBorder := leftBorder < totalPages
+	isRightBorder := rightBorder > totalPages-p.cursorPadding
+
+	if isLeftBorder && !isRightBorder {
+		if isLeftBorder {
+			var result []PaginationLink
+
+			leftSide := page - p.cursorPadding
+
+			if leftSide <= 1 {
+				pageOffset := page - 1
+				if pageOffset == 0 {
+					pageOffset++
+				}
+
+				result = append(result, p.pageLinksRange(pageOffset, page+p.cursorPadding)...)
+			} else if page-p.cursorPadding-1 == 1 {
+				result = append(result, p.pageLinksRange(1, p.cursorPadding)...)
+				result = append(result, p.pageLinksRange(leftSide, page+p.cursorPadding)...)
+			} else {
+				result = append(result, p.pageLinksRange(1, p.cursorPadding)...)
+				result = append(result, p.makeLinkPlaceholder())
+				result = append(result, p.pageLinksRange(leftSide, page+p.cursorPadding)...)
+			}
+
+			rightSide := page + p.cursorPadding + 1
+
+			if rightSide >= totalPages {
+				result = append(result, p.makeLinkFromUrl(totalPages))
+			} else {
+				result = append(result, p.makeLinkPlaceholder())
+				result = append(result, p.makeLinkFromUrl(totalPages))
+			}
+
+			return result, nil
+		}
+	}
+
+	rightLinks := p.pageLinksRange(leftBorder, rightBorder)
+
+	leftSideLinks := []PaginationLink{
+		p.makeLinkFromUrl(1),
+		p.makeLinkPlaceholder(),
+	}
+
+	result := append(leftSideLinks, rightLinks...)
+	return result, nil
+}
+
+func (p *PaginationView) makeLinkFromUrl(page int) PaginationLink {
+	queryValues := p.url.Query()
+	queryValues.Set(p.pageQueryParamName, fmt.Sprint(page))
+
+	p.url.RawQuery = queryValues.Encode()
+
+	return PaginationLink{
+		Link:       p.url.String(),
+		PageNumber: fmt.Sprint(page),
+	}
+}
+
+func (p *PaginationView) makeLinkPlaceholder() PaginationLink {
+	return PaginationLink{
+		Link:        "...",
+		PageNumber:  "...",
+		Placeholder: true,
+	}
+}
+
+type NewPaginationViewParams struct {
+	ItemsPerPage       int
+	ItemsCount         int
+	PageQueryParamName string
+}
+
+func NewPaginationView(url url.URL, params NewPaginationViewParams) *PaginationView {
+	return &PaginationView{
+		url:                url,
+		cursorPadding:      1,
+		itemsPerPage:       params.ItemsPerPage,
+		itemsCount:         params.ItemsCount,
+		pageQueryParamName: params.PageQueryParamName,
+	}
+}
+
+type GetArticlesCountParams struct {
+	StartDate  time.Time
+	EndDate    time.Time
+	TextLexems []string
+}
+
+func (s *ArticleService) GetArticlesCount(ctx context.Context, cacheKey string, params GetArticlesCountParams) (int, error) {
+	val, err := s.kv.Get(cacheKey)
+	if err == nil {
+		count, err := strconv.Atoi(string(val.Value()))
+		if err == nil {
+			return count, nil
+		}
+	}
+
+	count, err := s.queries.GetArticleCount(ctx, storage.GetArticleCountParams{
+		StartDate:        GetNullableSqlTime(params.StartDate),
+		StartDateDefault: DEFAULT_START_DATE,
+		EndDate:          GetNullableSqlTime(params.EndDate),
+		Lexems:           params.TextLexems,
+	})
+	if err != nil {
+		return -1, errors.Join(ErrArticlesCount, err)
+	}
+
+	_, err = s.kv.Put(cacheKey, []byte(fmt.Sprint(count)))
+	// NOTE: cast int64 may be dangerous
+	return int(count), nil
+}
+
 func (s *ArticleService) GetArticles(ctx context.Context, params GetArticlesParams) ([]ArticleDTO, error) {
 	articles, err := s.queries.ArticlesWithImages(ctx, storage.ArticlesWithImagesParams{
 		StartDate:        GetNullableSqlTime(params.StartDate),
 		StartDateDefault: DEFAULT_START_DATE,
 		EndDate:          GetNullableSqlTime(params.EndDate),
-		ArticleSorting:   string(params.Sorting),
 		Lexems:           params.TextLexems,
+		ArticleSorting:   string(params.Sorting),
+		Page:             int64((params.Page - 1) * params.PageSize),
+		PageSize:         int64(params.PageSize),
 	})
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrArticlesNotFound
@@ -282,12 +457,14 @@ type NewArticleServiceParams struct {
 	fx.In
 
 	DB *sql.DB
+	KV nats.KeyValue
 }
 
 func NewArticleSerivce(params NewArticleServiceParams) *ArticleService {
 	return &ArticleService{
 		db:      params.DB,
 		queries: storage.New(params.DB),
+		kv:      params.KV,
 	}
 }
 
@@ -402,11 +579,13 @@ type ArticleHandler struct {
 	articleService *ArticleService
 }
 
-var (
+const (
 	SORTING_QUERY_PARAM_NAME    = "sort"
 	START_DATE_QUERY_PARAM_NAME = "start_date"
 	END_DATE_QUERY_PARAM_NAME   = "end_date"
 	TEXT_QUERY_PARAM_NAME       = "text"
+	PAGE_QUERY_PARAM_NAME       = "page"
+	PAGE_SIZE_QUERY_PARAM_NAME  = "page_size"
 )
 
 var ErrUnsupportedQueryParam = errors.New("")
@@ -418,7 +597,7 @@ func getDateQuery(r *http.Request, queryName string) (time.Time, error) {
 	}
 	t, err := dateutils.ParseQueryString(date)
 	if err != nil {
-		return time.Time{}, errors.Join(fmt.Errorf("unsupported `%s` query value %s. Format must be like `2024-10-12T10:01`, `2024-10-12`, `YYYY-MM-DD` ", SORTING_QUERY_PARAM_NAME, r.URL.Query().Get(SORTING_QUERY_PARAM_NAME)), ErrUnsupportedQueryParam)
+		return time.Time{}, errors.Join(fmt.Errorf("unsupported `%s` query value %s. Format must be like `2024-10-12T10:01`, `2024-10-12`, `YYYY-MM-DD` ", SORTING_QUERY_PARAM_NAME, date), ErrUnsupportedQueryParam)
 	}
 	return t, nil
 }
@@ -436,8 +615,49 @@ func getArticleSortingQuery(r *http.Request, defaultVal ArticleSorting) (Article
 	}
 }
 
-func getTextQuert(r *http.Request) []string {
-    return strings.Split(r.URL.Query().Get(TEXT_QUERY_PARAM_NAME), " ")
+func getTextQuery(r *http.Request) []string {
+	return strings.Split(r.URL.Query().Get(TEXT_QUERY_PARAM_NAME), " ")
+}
+
+func getPageQuery(r *http.Request, defaultPage int) (int, error) {
+	pageStr := r.URL.Query().Get(PAGE_QUERY_PARAM_NAME)
+	if pageStr == "" {
+		return defaultPage, nil
+	}
+	page, err := strconv.Atoi(pageStr)
+	if err != nil {
+		return -1, errors.Join(fmt.Errorf("unsupported `%s` page value %s. Support only numbers", PAGE_QUERY_PARAM_NAME, pageStr), ErrUnsupportedQueryParam)
+	}
+	return page, nil
+}
+
+func getPageSizeQuery(r *http.Request, defaultPageSize int) (int, error) {
+	pageSizeStr := r.URL.Query().Get(PAGE_SIZE_QUERY_PARAM_NAME)
+	if pageSizeStr == "" {
+		return defaultPageSize, nil
+	}
+	pageSize, err := strconv.Atoi(pageSizeStr)
+	if err != nil {
+		return -1, errors.Join(fmt.Errorf("unsupported `%s` page size value %s. Support only numbers", PAGE_QUERY_PARAM_NAME, pageSizeStr), ErrUnsupportedQueryParam)
+	}
+	return pageSize, nil
+}
+
+func generateHash(data string) string {
+	hash := sha256.New()
+	hash.Write([]byte(data))
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func getCacheKey(startDate, endDate time.Time, textLexems []string) string {
+	key := fmt.Sprintf("%s.%s", startDate, endDate)
+	key = strings.Join(textLexems, ".")
+	return generateHash(key)
+}
+
+type articlesResponse struct {
+	Articles []ArticleDTO     `json:"articles"`
+	Pages    []PaginationLink `json:"pages"`
 }
 
 func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) {
@@ -452,32 +672,61 @@ func (hand *ArticleHandler) getArticles(w http.ResponseWriter, r *http.Request) 
 		articleErrHandler(w, err)
 		return
 	}
-	log.Println(startDate)
 
 	endDate, err := getDateQuery(r, END_DATE_QUERY_PARAM_NAME)
 	if err != nil {
 		articleErrHandler(w, err)
 		return
 	}
-	log.Println(endDate)
 
-	textLexems := getTextQuert(r)
-    log.Println(textLexems)
+	textLexems := getTextQuery(r)
 
-	// search := r.URL.Query().Get(TEXT_QUERY_PARAM_NAME)
-	// log.Println(search)
+	page, err := getPageQuery(r, DEFAULT_PAGE)
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
+
+	pageSize, err := getPageSizeQuery(r, DEFAULT_PAGE_SIZE)
+	if err != nil {
+		articleErrHandler(w, err)
+		return
+	}
 
 	articles, err := hand.articleService.GetArticles(r.Context(), GetArticlesParams{
 		Sorting:    sorting,
 		StartDate:  startDate,
 		EndDate:    endDate,
 		TextLexems: textLexems,
+		Page:       page,
+		PageSize:   pageSize,
 	})
 	if err != nil {
 		articleErrHandler(w, err)
 		return
 	}
-	json.NewEncoder(w).Encode(&articles)
+
+	// TODO: I can run it in a goroutine
+	cacheKey := getCacheKey(startDate, endDate, textLexems)
+	count, err := hand.articleService.GetArticlesCount(r.Context(), cacheKey, GetArticlesCountParams{
+		StartDate:  startDate,
+		EndDate:    endDate,
+		TextLexems: textLexems,
+	})
+
+	pagination := NewPaginationView(*r.URL, NewPaginationViewParams{
+		ItemsPerPage:       pageSize,
+		ItemsCount:         count,
+		PageQueryParamName: PAGE_QUERY_PARAM_NAME,
+	})
+
+	// TODO: err
+	pagesLinks, _ := pagination.PagesLinks(page)
+
+	json.NewEncoder(w).Encode(&articlesResponse{
+		Articles: articles,
+		Pages:    pagesLinks,
+	})
 }
 
 func articleErrHandler(w http.ResponseWriter, err error) {
@@ -577,11 +826,23 @@ func StartHttpServer(params StartHttpServerParams) {
 
 const groupHandler = `group:"http.handler"`
 
+type ParamsNewNatsArticleKeyValue struct {
+	fx.In
+
+	Lifecycle fx.Lifecycle
+	JS        nats.JetStreamContext
+}
+
+func NewNatsArticleKeyValue(params ParamsNewNatsArticleKeyValue) (nats.KeyValue, error) {
+	return natsinfo.CreateOrAttachKeyValue(params.JS, &natsinfo.ARTICLE_COUNT_KEY_VALUE_CONFIG)
+}
+
 func main() {
 	fx.New(
 		fx.Provide(
 			natsinfo.NewNatsConfig,
 			natsinfo.NewNatsConnection,
+			NewNatsArticleKeyValue,
 
 			NewDatabaseConfig,
 			NewDatabaseConnection,

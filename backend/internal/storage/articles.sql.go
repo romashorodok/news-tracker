@@ -87,6 +87,8 @@ GROUP BY articles.id
 ORDER BY
     CASE WHEN $5::text = 'newest' THEN articles.published_at END DESC,
     CASE WHEN $5::text = 'oldest' THEN articles.published_at END ASC
+LIMIT $7::bigint
+OFFSET $6::bigint
 `
 
 type ArticlesWithImagesParams struct {
@@ -95,6 +97,8 @@ type ArticlesWithImagesParams struct {
 	EndDate          sql.NullTime
 	Lexems           []string
 	ArticleSorting   string
+	Page             int64
+	PageSize         int64
 }
 
 type ArticlesWithImagesRow struct {
@@ -117,6 +121,8 @@ func (q *Queries) ArticlesWithImages(ctx context.Context, arg ArticlesWithImages
 		arg.EndDate,
 		pq.Array(arg.Lexems),
 		arg.ArticleSorting,
+		arg.Page,
+		arg.PageSize,
 	)
 	if err != nil {
 		return nil, err
@@ -217,6 +223,43 @@ func (q *Queries) GetArticleByID(ctx context.Context, id int64) (GetArticleByIDR
 		&i.Images,
 	)
 	return i, err
+}
+
+const getArticleCount = `-- name: GetArticleCount :one
+SELECT COUNT(*)
+FROM articles
+WHERE
+(
+    articles.published_at >=
+        COALESCE($1, $2)::timestamp
+    AND
+    articles.published_at <= COALESCE($3, NOW())::timestamp
+)
+AND
+(
+    CAST(ARRAY_TO_JSON($4::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
+    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+    @@ to_tsquery(ARRAY_TO_STRING($4, ' & '))
+)
+`
+
+type GetArticleCountParams struct {
+	StartDate        sql.NullTime
+	StartDateDefault time.Time
+	EndDate          sql.NullTime
+	Lexems           []string
+}
+
+func (q *Queries) GetArticleCount(ctx context.Context, arg GetArticleCountParams) (int64, error) {
+	row := q.queryRow(ctx, q.getArticleCountStmt, getArticleCount,
+		arg.StartDate,
+		arg.StartDateDefault,
+		arg.EndDate,
+		pq.Array(arg.Lexems),
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
 }
 
 const getArticleIDByTitleAndOrigin = `-- name: GetArticleIDByTitleAndOrigin :one
