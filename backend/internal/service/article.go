@@ -137,6 +137,10 @@ func (s *ArticleService) GetArticlesCount(ctx context.Context, cacheKey string, 
 	}
 
 	_, err = s.kv.Put(cacheKey, []byte(fmt.Sprint(count)))
+    if err != nil {
+        log.Println("Unable store cache for %s", cacheKey)
+    }
+
 	// NOTE: cast int64 may be dangerous
 	return int(count), nil
 }
