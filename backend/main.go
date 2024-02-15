@@ -3,20 +3,18 @@ package main
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"os"
-	"time"
 
 	chi "github.com/go-chi/chi/v5"
 	_ "github.com/lib/pq"
 	nats "github.com/nats-io/nats.go"
 	"github.com/romashorodok/news-tracker/backend/internal/handler/v1"
 	"github.com/romashorodok/news-tracker/backend/internal/service"
-	"github.com/romashorodok/news-tracker/backend/internal/storage"
+	"github.com/romashorodok/news-tracker/backend/internal/worker"
 	"github.com/romashorodok/news-tracker/pkg/envutils"
 	"github.com/romashorodok/news-tracker/pkg/httputils"
 	"github.com/romashorodok/news-tracker/pkg/natsinfo"
@@ -68,97 +66,6 @@ func NewDatabaseConnection(params NewDatabaseConnectionParams) (*sql.DB, error) 
 	}
 	params.Lifecycle.Append(fx.StopHook(conn.Close))
 	return conn, nil
-}
-
-type articleConsumerWorker struct {
-	js             nats.JetStreamContext
-	articleService *service.ArticleService
-}
-
-func (a *articleConsumerWorker) handler(ctx context.Context) func(msg *nats.Msg) {
-	return func(msg *nats.Msg) {
-		var article natsinfo.Article
-
-		if err := article.Unmarshal(msg.Data); err != nil {
-			log.Println("Unable deserialize %s article payload. Err:%s", msg.Subject, err)
-			_ = msg.Ack()
-		}
-
-		articleID, err := a.articleService.GetArticleIDByTitleAndOrigin(ctx, storage.GetArticleIDByTitleAndOriginParams{
-			Title:  article.Title,
-			Origin: article.Origin,
-		})
-		if errors.Is(err, sql.ErrNoRows) {
-			if _, err := a.articleService.NewArticle(ctx, service.NewArticleParams{
-				Article: storage.NewArticleParams{
-					Title:        article.Title,
-					Preface:      article.Preface,
-					Content:      article.Content,
-					Origin:       article.Origin,
-					ViewersCount: int32(article.ViewersCount),
-					PublishedAt:  article.PublishedAt,
-				},
-				MainImageURL:      article.MainImage,
-				ContentImagesURLs: article.ContentImages,
-			}); err == nil {
-				log.Printf("create the %+v", article)
-				// _ = msg.Ack(opts ...nats.AckOpt)
-				return
-			}
-		} else if err != nil {
-			log.Printf("Unexpected database error for Title:%s Origin:%s. Err:%s", article.Title, article.Origin, err)
-			return
-		}
-
-		if err = a.articleService.UpdateArticleStats(ctx, storage.UpdateArticleStatsParams{
-			ViewersCount: int32(article.ViewersCount),
-			UpdatedAt:    time.Now(),
-			ID:           articleID,
-		}); err != nil {
-			log.Printf("Unable update article for Title:%s Origin:%s. Err:%s", article.Title, article.Origin, err)
-			return
-		}
-		log.Printf("update the %+v", article)
-
-		// _ = msg.Ack(opts ...nats.AckOpt)
-	}
-}
-
-func (a *articleConsumerWorker) start(ctx context.Context) {
-	if _, err := natsinfo.CreateOrUpdateStream(a.js, natsinfo.ARTICLES_STREAM_CONFIG); err != nil {
-		log.Panicf("unable set-up nats %s stream. Err:%s", natsinfo.ARTICLES_STREAM_CONFIG.Name, err)
-		os.Exit(1)
-	}
-
-	queueGroup := "backend-articles-consumer"
-	stream, subject, subOpts, config := natsinfo.ArticlesStream_NewArticleConsumerConfig(queueGroup)
-
-	if _, err := natsinfo.CreateOrUpdateConsumer(a.js, stream, config); err != nil {
-		log.Panicf("unable set-up nats %s consumer. Err:%s", queueGroup, err)
-		os.Exit(1)
-	}
-
-	if _, err := a.js.QueueSubscribe(subject, queueGroup, a.handler(ctx), subOpts...); err != nil {
-		log.Panicf("unable start nats %s consumer. Err:%s", queueGroup, err)
-		os.Exit(1)
-	}
-
-	<-ctx.Done()
-}
-
-type StartArticleConsumerWorkerParams struct {
-	fx.In
-
-	JS             nats.JetStreamContext
-	ArticleService *service.ArticleService
-}
-
-func StartArticleConsumerWorker(params StartArticleConsumerWorkerParams) {
-	worker := &articleConsumerWorker{
-		js:             params.JS,
-		articleService: params.ArticleService,
-	}
-	go worker.start(context.Background())
 }
 
 type HttpServerConfig struct {
@@ -246,7 +153,7 @@ func main() {
 
 			httputils.AsHandler(groupHandler, handler.NewArticleHandler),
 		),
-		// fx.Invoke(StartArticleConsumerWorker),
+		fx.Invoke(worker.StartArticleConsumerWorker),
 		fx.Invoke(StartHttpServer),
 	).Run()
 }
