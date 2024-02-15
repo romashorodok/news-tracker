@@ -27,9 +27,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	if q.articlesStmt, err = db.PrepareContext(ctx, articles); err != nil {
 		return nil, fmt.Errorf("error preparing query Articles: %w", err)
 	}
-	if q.articlesWithImagesStmt, err = db.PrepareContext(ctx, articlesWithImages); err != nil {
-		return nil, fmt.Errorf("error preparing query ArticlesWithImages: %w", err)
-	}
 	if q.attachArticleImageStmt, err = db.PrepareContext(ctx, attachArticleImage); err != nil {
 		return nil, fmt.Errorf("error preparing query AttachArticleImage: %w", err)
 	}
@@ -41,9 +38,6 @@ func Prepare(ctx context.Context, db DBTX) (*Queries, error) {
 	}
 	if q.getArticleIDByTitleAndOriginStmt, err = db.PrepareContext(ctx, getArticleIDByTitleAndOrigin); err != nil {
 		return nil, fmt.Errorf("error preparing query GetArticleIDByTitleAndOrigin: %w", err)
-	}
-	if q.getArticleImagesStmt, err = db.PrepareContext(ctx, getArticleImages); err != nil {
-		return nil, fmt.Errorf("error preparing query GetArticleImages: %w", err)
 	}
 	if q.newArticleStmt, err = db.PrepareContext(ctx, newArticle); err != nil {
 		return nil, fmt.Errorf("error preparing query NewArticle: %w", err)
@@ -64,11 +58,6 @@ func (q *Queries) Close() error {
 			err = fmt.Errorf("error closing articlesStmt: %w", cerr)
 		}
 	}
-	if q.articlesWithImagesStmt != nil {
-		if cerr := q.articlesWithImagesStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing articlesWithImagesStmt: %w", cerr)
-		}
-	}
 	if q.attachArticleImageStmt != nil {
 		if cerr := q.attachArticleImageStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing attachArticleImageStmt: %w", cerr)
@@ -87,11 +76,6 @@ func (q *Queries) Close() error {
 	if q.getArticleIDByTitleAndOriginStmt != nil {
 		if cerr := q.getArticleIDByTitleAndOriginStmt.Close(); cerr != nil {
 			err = fmt.Errorf("error closing getArticleIDByTitleAndOriginStmt: %w", cerr)
-		}
-	}
-	if q.getArticleImagesStmt != nil {
-		if cerr := q.getArticleImagesStmt.Close(); cerr != nil {
-			err = fmt.Errorf("error closing getArticleImagesStmt: %w", cerr)
 		}
 	}
 	if q.newArticleStmt != nil {
@@ -149,12 +133,10 @@ type Queries struct {
 	db                               DBTX
 	tx                               *sql.Tx
 	articlesStmt                     *sql.Stmt
-	articlesWithImagesStmt           *sql.Stmt
 	attachArticleImageStmt           *sql.Stmt
 	getArticleByIDStmt               *sql.Stmt
 	getArticleCountStmt              *sql.Stmt
 	getArticleIDByTitleAndOriginStmt *sql.Stmt
-	getArticleImagesStmt             *sql.Stmt
 	newArticleStmt                   *sql.Stmt
 	newImageStmt                     *sql.Stmt
 	updateArticleStatsStmt           *sql.Stmt
@@ -165,12 +147,10 @@ func (q *Queries) WithTx(tx *sql.Tx) *Queries {
 		db:                               tx,
 		tx:                               tx,
 		articlesStmt:                     q.articlesStmt,
-		articlesWithImagesStmt:           q.articlesWithImagesStmt,
 		attachArticleImageStmt:           q.attachArticleImageStmt,
 		getArticleByIDStmt:               q.getArticleByIDStmt,
 		getArticleCountStmt:              q.getArticleCountStmt,
 		getArticleIDByTitleAndOriginStmt: q.getArticleIDByTitleAndOriginStmt,
-		getArticleImagesStmt:             q.getArticleImagesStmt,
 		newArticleStmt:                   q.newArticleStmt,
 		newImageStmt:                     q.newImageStmt,
 		updateArticleStatsStmt:           q.updateArticleStatsStmt,

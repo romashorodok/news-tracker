@@ -15,48 +15,6 @@ import (
 )
 
 const articles = `-- name: Articles :many
-SELECT id, title, preface, content, origin, viewers_count, created_at, updated_at, published_at FROM articles LIMIT $2 OFFSET $1
-`
-
-type ArticlesParams struct {
-	SqlOffset int32
-	SqlLimit  int32
-}
-
-func (q *Queries) Articles(ctx context.Context, arg ArticlesParams) ([]Article, error) {
-	rows, err := q.query(ctx, q.articlesStmt, articles, arg.SqlOffset, arg.SqlLimit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []Article
-	for rows.Next() {
-		var i Article
-		if err := rows.Scan(
-			&i.ID,
-			&i.Title,
-			&i.Preface,
-			&i.Content,
-			&i.Origin,
-			&i.ViewersCount,
-			&i.CreatedAt,
-			&i.UpdatedAt,
-			&i.PublishedAt,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const articlesWithImages = `-- name: ArticlesWithImages :many
 SELECT
     articles.id, articles.title, articles.preface, articles.content, articles.origin, articles.viewers_count, articles.created_at, articles.updated_at, articles.published_at,
     array_to_json(array_agg(row_to_json(images))) AS images
@@ -91,7 +49,7 @@ LIMIT $7::bigint
 OFFSET $6::bigint
 `
 
-type ArticlesWithImagesParams struct {
+type ArticlesParams struct {
 	StartDate        sql.NullTime
 	StartDateDefault time.Time
 	EndDate          sql.NullTime
@@ -101,7 +59,7 @@ type ArticlesWithImagesParams struct {
 	PageSize         int64
 }
 
-type ArticlesWithImagesRow struct {
+type ArticlesRow struct {
 	ID           int64
 	Title        string
 	Preface      string
@@ -114,8 +72,8 @@ type ArticlesWithImagesRow struct {
 	Images       json.RawMessage
 }
 
-func (q *Queries) ArticlesWithImages(ctx context.Context, arg ArticlesWithImagesParams) ([]ArticlesWithImagesRow, error) {
-	rows, err := q.query(ctx, q.articlesWithImagesStmt, articlesWithImages,
+func (q *Queries) Articles(ctx context.Context, arg ArticlesParams) ([]ArticlesRow, error) {
+	rows, err := q.query(ctx, q.articlesStmt, articles,
 		arg.StartDate,
 		arg.StartDateDefault,
 		arg.EndDate,
@@ -128,9 +86,9 @@ func (q *Queries) ArticlesWithImages(ctx context.Context, arg ArticlesWithImages
 		return nil, err
 	}
 	defer rows.Close()
-	var items []ArticlesWithImagesRow
+	var items []ArticlesRow
 	for rows.Next() {
-		var i ArticlesWithImagesRow
+		var i ArticlesRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Title,
@@ -278,43 +236,6 @@ func (q *Queries) GetArticleIDByTitleAndOrigin(ctx context.Context, arg GetArtic
 	var id int64
 	err := row.Scan(&id)
 	return id, err
-}
-
-const getArticleImages = `-- name: GetArticleImages :many
-SELECT images.url, article_images.main FROM images
-JOIN (
-    SELECT DISTINCT main, image_id FROM article_images
-    WHERE article_id = $1
-) AS article_images
-ON images.id = article_images.image_id
-`
-
-type GetArticleImagesRow struct {
-	Url  string
-	Main bool
-}
-
-func (q *Queries) GetArticleImages(ctx context.Context, id int64) ([]GetArticleImagesRow, error) {
-	rows, err := q.query(ctx, q.getArticleImagesStmt, getArticleImages, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []GetArticleImagesRow
-	for rows.Next() {
-		var i GetArticleImagesRow
-		if err := rows.Scan(&i.Url, &i.Main); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
 }
 
 const newArticle = `-- name: NewArticle :one

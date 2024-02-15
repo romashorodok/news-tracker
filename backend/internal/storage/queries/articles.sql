@@ -11,17 +11,7 @@ INSERT INTO articles (
     @origin, @viewers_count, @published_at
 ) RETURNING id;
 
--- name: AttachArticleImage :exec
-INSERT INTO article_images (
-    article_id, image_id, main
-) VALUES (
-    @article_id, @image_id, @main
-);
-
 -- name: Articles :many
-SELECT * FROM articles LIMIT @sql_limit OFFSET @sql_offset;
-
--- name: ArticlesWithImages :many
 SELECT
     articles.*,
     array_to_json(array_agg(row_to_json(images))) AS images
@@ -92,13 +82,12 @@ INSERT INTO images (
     @url
 ) RETURNING id;
 
--- name: GetArticleImages :many
-SELECT images.url, article_images.main FROM images
-JOIN (
-    SELECT DISTINCT main, image_id FROM article_images
-    WHERE article_id = @id
-) AS article_images
-ON images.id = article_images.image_id;
+-- name: AttachArticleImage :exec
+INSERT INTO article_images (
+    article_id, image_id, main
+) VALUES (
+    @article_id, @image_id, @main
+);
 
 -- name: GetArticleCount :one
 SELECT COUNT(*)
