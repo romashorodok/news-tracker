@@ -15,11 +15,7 @@ import (
 )
 
 const articles = `-- name: Articles :many
-SELECT
-    articles.id, articles.title, articles.preface, articles.content, articles.origin, articles.viewers_count, articles.created_at, articles.updated_at, articles.published_at,
-    array_to_json(array_agg(row_to_json(images))) AS images
-FROM articles
-LEFT JOIN (
+WITH ImageData AS (
     SELECT DISTINCT ON (ai.image_id)
         ai.image_id,
         ai.main,
@@ -27,20 +23,21 @@ LEFT JOIN (
         ai.article_id
     FROM article_images ai
     JOIN images i ON ai.image_id = i.id
-) AS images ON articles.id = images.article_id
+)
+SELECT
+    articles.id, articles.title, articles.preface, articles.content, articles.origin, articles.viewers_count, articles.created_at, articles.updated_at, articles.published_at,
+    array_to_json(array_agg(row_to_json(images))) AS images
+FROM articles
+LEFT JOIN ImageData AS images ON articles.id = images.article_id
 WHERE
-(
-    articles.published_at >=
+    articles.published_at BETWEEN
         COALESCE($1, $2)::timestamp
-    AND
-    articles.published_at <= COALESCE($3, NOW())::timestamp
-)
-AND
-(
-    CAST(ARRAY_TO_JSON($4::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
-    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
-    @@ to_tsquery(ARRAY_TO_STRING($4, ' & '))
-)
+        AND COALESCE($3, NOW())::timestamp
+    AND (
+        CAST(ARRAY_TO_JSON($4::text[]) AS VARCHAR) IN ('[null]', '[""]')
+        OR to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+            @@ to_tsquery(ARRAY_TO_STRING($4, ' & '))
+    )
 GROUP BY articles.id
 ORDER BY
     CASE WHEN $5::text = 'newest' THEN articles.published_at END DESC,
@@ -187,12 +184,9 @@ const getArticleCount = `-- name: GetArticleCount :one
 SELECT COUNT(*)
 FROM articles
 WHERE
-(
-    articles.published_at >=
+    articles.published_at BETWEEN
         COALESCE($1, $2)::timestamp
-    AND
-    articles.published_at <= COALESCE($3, NOW())::timestamp
-)
+        AND COALESCE($3, NOW())::timestamp
 AND
 (
     CAST(ARRAY_TO_JSON($4::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR

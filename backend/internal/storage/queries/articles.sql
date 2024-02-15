@@ -12,11 +12,7 @@ INSERT INTO articles (
 ) RETURNING id;
 
 -- name: Articles :many
-SELECT
-    articles.*,
-    array_to_json(array_agg(row_to_json(images))) AS images
-FROM articles
-LEFT JOIN (
+WITH ImageData AS (
     SELECT DISTINCT ON (ai.image_id)
         ai.image_id,
         ai.main,
@@ -24,20 +20,21 @@ LEFT JOIN (
         ai.article_id
     FROM article_images ai
     JOIN images i ON ai.image_id = i.id
-) AS images ON articles.id = images.article_id
+)
+SELECT
+    articles.*,
+    array_to_json(array_agg(row_to_json(images))) AS images
+FROM articles
+LEFT JOIN ImageData AS images ON articles.id = images.article_id
 WHERE
-(
-    articles.published_at >=
+    articles.published_at BETWEEN
         COALESCE(sqlc.narg('start_date'), @start_date_default)::timestamp
-    AND
-    articles.published_at <= COALESCE(sqlc.narg('end_date'), NOW())::timestamp
-)
-AND
-(
-    CAST(ARRAY_TO_JSON(sqlc.slice('lexems')::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
-    to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
-    @@ to_tsquery(ARRAY_TO_STRING(sqlc.slice('lexems'), ' & '))
-)
+        AND COALESCE(sqlc.narg('end_date'), NOW())::timestamp
+    AND (
+        CAST(ARRAY_TO_JSON(sqlc.slice('lexems')::text[]) AS VARCHAR) IN ('[null]', '[""]')
+        OR to_tsvector(articles.title || ' ' || articles.content || ' ' || articles.preface)
+            @@ to_tsquery(ARRAY_TO_STRING(sqlc.slice('lexems'), ' & '))
+    )
 GROUP BY articles.id
 ORDER BY
     CASE WHEN @article_sorting::text = 'newest' THEN articles.published_at END DESC,
@@ -93,12 +90,9 @@ INSERT INTO article_images (
 SELECT COUNT(*)
 FROM articles
 WHERE
-(
-    articles.published_at >=
+    articles.published_at BETWEEN
         COALESCE(sqlc.narg('start_date'), @start_date_default)::timestamp
-    AND
-    articles.published_at <= COALESCE(sqlc.narg('end_date'), NOW())::timestamp
-)
+        AND COALESCE(sqlc.narg('end_date'), NOW())::timestamp
 AND
 (
     CAST(ARRAY_TO_JSON(sqlc.slice('lexems')::text[]) AS VARCHAR) IN ('[null]', '[""]')  OR
