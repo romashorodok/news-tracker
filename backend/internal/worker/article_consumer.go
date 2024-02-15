@@ -47,7 +47,7 @@ func (a *articleConsumerWorker) handler(ctx context.Context) func(msg *nats.Msg)
 				ContentImagesURLs: article.ContentImages,
 			}); err == nil {
 				log.Printf("Created article %d.", articleID)
-				// _ = msg.Ack(opts ...nats.AckOpt)
+				_ = msg.Ack()
 				return
 			}
 		} else if err != nil {
@@ -64,7 +64,7 @@ func (a *articleConsumerWorker) handler(ctx context.Context) func(msg *nats.Msg)
 			return
 		}
 		log.Printf("Update article %d stats.", articleID)
-		// _ = msg.Ack(opts ...nats.AckOpt)
+		_ = msg.Ack()
 	}
 }
 
